@@ -147,6 +147,53 @@ verificado no hay aplicación de cambios — se propone y se detiene.
 **Criterio de cierre:** aplicar y revertir, comprobando que el contenido vuelve byte a
 byte al estado previo.
 
+### Estado de la implementación (etapa 4)
+
+Implementada en `journal.py`, con `tests/test_journal.py` (51 tests) y
+`tests/medicion_journal.py`, que hace el ciclo completo sobre un skill real del hub
+(`harness/hello-world`) y verifica la restauración **por hash**:
+
+```
+1. respaldar    hello-world.baaad28153714f27.83a8f130f22b.bak  (1267 bytes)
+2. aplicar      1250 → 1295 bytes
+3. revertir     hash restaurado 83a8f130f22bf36ccc63b8e5d5e95d64
+4. verificar    byte a byte idéntico al original : SÍ
+                hash coincide                    : SÍ
+                el cambio ya no está en el archivo: SÍ
+                el original del hub no se tocó   : SÍ
+```
+
+**Por qué no se delega al host:** verificado que el arnés no tiene API de respaldo con
+restauración para skills (el *ledger* es telemetría, sin rollback). De ahí que el módulo
+implemente las dos piezas.
+
+**Decisiones que sostienen el diseño:**
+
+```
+contenido completo, no diff     un diff depende de que el archivo esté en el estado que el
+                                diff espera; si un tercero lo tocó en el medio, aplicarlo
+                                en reversa produce algo que no es ni el estado viejo ni el
+                                nuevo. El contenido completo restaura de forma determinista.
+
+append-only                     una evidencia que se puede editar no sirve como evidencia.
+                                Revertir AGREGA una línea que referencia a la vieja, en
+                                lugar de reescribirla: así queda registrado que el cambio
+                                estuvo aplicado, que es lo que hay que conservar.
+
+se niega a pisar trabajo ajeno  si el contenido actual no coincide con el hash posterior
+                                registrado, un tercero editó el skill. Revertir borraría ese
+                                trabajo: se niega y lo explica, salvo ``force`` explícito.
+```
+
+**Un defecto que solo apareció midiendo.** El journal append-only guarda dos líneas por
+cambio (`pending` + `applied`), así que un diagnóstico que contara líneas reportaría cada
+cambio terminado como **escritura incompleta**. La medición real sobre el skill del hub lo
+mostró (`pendientes: 1` con el cambio ya aplicado). El mismo error estaba en
+`last_applied`, que devolvía una y otra vez la línea `applied` vieja de un cambio ya
+revertido — el segundo rollback fallaba con *"ya fue revertida"* en lugar de retroceder al
+anterior. Ambos se corrigen leyendo el **estado efectivo** (la última marca por
+`entry_id`), no la última línea que coincide con el filtro. Los dos tienen test.
+
 ## Etapa 5 — ¿Sirvió? (determinista)
 
 **Pregunta:** el cambio se hizo. ¿Funcionó?

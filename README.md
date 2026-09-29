@@ -123,7 +123,7 @@ una comparación cambia una verificación reproducible por una opinión.
 ```
 5. ¿SIRVIÓ?      implementada   49 tests · verificado contra el registro real
 1. RECURRENCIA   implementada   64 tests · 17 → 7 falsos positivos corregidos
-4. JOURNAL       pendiente
+4. JOURNAL       implementada   51 tests · rollback verificado por hash
 2. TECHO         pendiente
 3. PROPUESTA     pendiente      (la única con modelo)
 ```
@@ -138,6 +138,8 @@ python3 tests/test_effect.py            # 49 tests de la etapa 5
 python3 tests/medicion_real.py          # etapa 5 contra el registro real
 python3 tests/test_recurrence.py        # 64 tests de la etapa 1
 python3 tests/medicion_recurrencia.py   # etapa 1 contra la trayectoria real
+python3 tests/test_journal.py           # 51 tests de la etapa 4
+python3 tests/medicion_journal.py       # ciclo completo sobre un skill real del hub
 ```
 
 Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está
