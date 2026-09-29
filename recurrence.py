@@ -67,6 +67,19 @@ DEFAULT_WINDOW_DAYS = 30.0
 #: Un patrón sostenido se repite en el tiempo, no solo en cantidad.
 MIN_SPAN_DAYS = 1.0
 
+#: Días máximos de silencio para que un candidato siga siendo accionable.
+#:
+#: Un patrón que **dejó de ocurrir** no se arregla con un cambio de hoy. Medido sobre la
+#: trayectoria real: **5 de 8 candidatos** llevaban más de 7 días sin aparecer — uno de
+#: ellos, 14,5 días, porque el archivo que faltaba (`wiki/SCHEMA.md`) se creó *después* de
+#: su última aparición. Proponer un cambio ahí es arreglar algo que ya no puede pasar: gasta
+#: presupuesto, toca un skill, y el "éxito" posterior no prueba nada porque el fallo ya
+#: estaba muerto antes del cambio.
+#:
+#: Se mide contra el silencio, no contra el span: un fallo puede llevar meses vivo y
+#: aparecer cada tres semanas. Lo que decide es **cuándo fue la última vez**.
+MAX_SILENCE_DAYS = 7.0
+
 #: Marcadores de que el resultado es un **rechazo del arnés**, no un fallo del agente.
 #:
 #: Es la corrección más importante del filtro, y salió de medir: **42 % de los fallos de
@@ -156,6 +169,25 @@ class GuardrailEvent:
 
 
 @dataclass(frozen=True)
+class StaleFailure:
+    """Un patrón que ya dejó de ocurrir.
+
+    Supera los umbrales de recurrencia, pero su última aparición quedó lejos: el fallo no
+    está vivo. Se reporta aparte en lugar de proponerse, para que el descarte sea auditable
+    — y para que "0 candidatos" sea distinguible de "0 candidatos *porque revisé y todos
+    estaban muertos*".
+    """
+
+    fingerprint: str
+    tool_name: str
+    occurrences: int
+    sessions: int
+    span_days: float
+    silence_days: float
+    sample: str
+
+
+@dataclass(frozen=True)
 class RecurrenceReport:
     """Resultado del filtro, con todo lo descartado y por qué.
 
@@ -164,6 +196,8 @@ class RecurrenceReport:
     ``recurring``   fallos del agente que se repiten **en el tiempo**. Candidatos.
     ``bursts``      fallos concentrados en horas. Episodios, no patrones.
     ``guardrails``  rechazos del propio arnés. No son errores del agente.
+    ``stale``       patrones que ya dejaron de ocurrir. Accionar sobre ellos gasta
+                    presupuesto en un fallo que no puede volver.
 
     ``discarded_ts`` importa tanto como los recurrentes: si muchas filas no se pudieron
     fechar, la conclusión "no hay fallos recurrentes" es en realidad "no se pudo mirar".
@@ -172,6 +206,7 @@ class RecurrenceReport:
     recurring: tuple[RecurringFailure, ...]
     bursts: tuple[Burst, ...]
     guardrails: tuple[GuardrailEvent, ...]
+    stale: tuple[StaleFailure, ...]
     single_events: int
     total_failures: int
     sessions_seen: int
@@ -199,6 +234,7 @@ class RecurrenceReport:
         """Una línea con el reparto, para el informe y el journal."""
         return (
             f"{len(self.recurring)} recurrentes · {len(self.bursts)} ráfagas · "
+            f"{len(self.stale)} ya no ocurren · "
             f"{len(self.guardrails)} rechazos del arnés · {self.single_events} eventos únicos"
         )
 
@@ -249,6 +285,7 @@ def find_recurring(
     min_sessions: int = MIN_SESSIONS,
     window_days: float = DEFAULT_WINDOW_DAYS,
     min_span_days: float = MIN_SPAN_DAYS,
+    max_silence_days: float = MAX_SILENCE_DAYS,
 ) -> RecurrenceReport:
     """Aplica el filtro sobre una lectura de trayectoria ya hecha.
 
@@ -261,7 +298,9 @@ def find_recurring(
        fallo del agente. (Medido: 42 % de los fallos de una ventana real.)
     2. **Ráfaga** si supera el umbral pero sus apariciones caben en menos de
        ``min_span_days``. Es un episodio, no un patrón.
-    3. **Recurrente** si supera el umbral y se sostiene en el tiempo.
+    3. **Caduco** si su última aparición quedó a más de ``max_silence_days``. El patrón
+       existe en el histórico pero ya no está vivo.
+    4. **Recurrente** si supera el umbral, se sostiene en el tiempo y sigue ocurriendo.
 
     Las apariciones se cuentan **solo dentro de la ventana**: un fallo que ocurrió tres
     veces hace un año no es recurrente hoy.
@@ -270,6 +309,7 @@ def find_recurring(
     recurring: list[RecurringFailure] = []
     bursts: list[Burst] = []
     guardrails: list[GuardrailEvent] = []
+    stale: list[StaleFailure] = []
     single_events = 0
     sessions: set[str] = set()
 
@@ -323,7 +363,25 @@ def find_recurring(
             )
             continue
 
-        # 3. Recurrente sostenido.
+        # 3. Caduco: se repitió, pero dejó de ocurrir. Un cambio de hoy no lo arregla —
+        # ya está arreglado, o ya no aplica. Y el "éxito" posterior no probaría nada,
+        # porque el fallo estaba muerto antes del cambio.
+        silence = (scan.scanned_until - last.ts) / 86400.0
+        if silence > max_silence_days:
+            stale.append(
+                StaleFailure(
+                    fingerprint=fingerprint,
+                    tool_name=first.tool_name,
+                    occurrences=occurrences,
+                    sessions=distinct_sessions,
+                    span_days=span,
+                    silence_days=silence,
+                    sample=first.sample,
+                )
+            )
+            continue
+
+        # 4. Recurrente sostenido y vivo.
         recurring.append(
             RecurringFailure(
                 fingerprint=fingerprint,
@@ -346,6 +404,7 @@ def find_recurring(
         recurring=tuple(recurring),
         bursts=tuple(bursts),
         guardrails=tuple(guardrails),
+        stale=tuple(stale),
         single_events=single_events,
         total_failures=len(scan.failures),
         sessions_seen=len(sessions),
@@ -362,6 +421,7 @@ def detect(
     min_occurrences: int = MIN_OCCURRENCES,
     min_sessions: int = MIN_SESSIONS,
     min_span_days: float = MIN_SPAN_DAYS,
+    max_silence_days: float = MAX_SILENCE_DAYS,
     now: Optional[float] = None,
 ) -> RecurrenceReport:
     """Lee la trayectoria y aplica el filtro en una llamada.
@@ -377,6 +437,7 @@ def detect(
         min_sessions=min_sessions,
         window_days=window_days,
         min_span_days=min_span_days,
+        max_silence_days=max_silence_days,
     )
 
 
@@ -384,6 +445,8 @@ __all__ = [
     "MIN_OCCURRENCES",
     "MIN_SESSIONS",
     "MIN_SPAN_DAYS",
+    "MAX_SILENCE_DAYS",
+    "StaleFailure",
     "DEFAULT_WINDOW_DAYS",
     "GUARDRAIL_MARKERS",
     "RecurringFailure",

@@ -30,6 +30,7 @@ from recurrence import (  # noqa: E402
     DEFAULT_WINDOW_DAYS,
     MIN_OCCURRENCES,
     MIN_SESSIONS,
+    MAX_SILENCE_DAYS,
     MIN_SPAN_DAYS,
     detect,
     find_recurring,
@@ -179,9 +180,20 @@ def test_window_excludes_old_failures() -> None:
           report.has_recurrence is False,
           f"recurrentes={len(report.recurring)}")
 
-    # El mismo conjunto con una ventana amplia: ahora sí.
-    report2 = find_recurring(scan=_scan(viejo, until=now), window_days=120)
+    # Con el filtro de frescura apartado, el efecto de la ventana se ve aislado: los
+    # mismos datos entran cuando la ventana es amplia. Se apaga el filtro a propósito —
+    # si no, la antigüedad los marcaría caducos y no se probaría la ventana, se probaría
+    # el otro filtro (que tiene sus propios tests).
+    report2 = find_recurring(
+        scan=_scan(viejo, until=now), window_days=120, max_silence_days=10_000.0
+    )
     check("con ventana de 120 días → reconocido", report2.has_recurrence is True)
+
+    # Y con el filtro real, esos mismos datos son caducos: no se proponen.
+    report3 = find_recurring(scan=_scan(viejo, until=now), window_days=120)
+    check("pero marcados caducos por antigüedad", len(report3.stale) == 1,
+          f"stale={len(report3.stale)}")
+    check("y NO cuentan como candidatos", report3.has_recurrence is False)
 
     check("la ventana por defecto es 30 días", DEFAULT_WINDOW_DAYS == 30.0)
 
@@ -283,17 +295,31 @@ def test_scan_structure_not_text() -> None:
         huellas = {f.fingerprint for f in scan.failures}
         check("3 formas distintas → 3 huellas", len(huellas) == 3, f"{len(huellas)}")
 
-        # El mismo error de acceso, escrito distinto, es una sola forma.
+        # El mismo archivo, alcanzado por otra ruta, es una sola forma: el directorio es
+        # ruido. (El NOMBRE sí distingue — eso se fija en el test de abajo.)
         rows2 = [
             ("tool", 1, "read_file", '{"error": "access denied: /a/one"}', now - 90, "s1"),
-            ("tool", 1, "read_file", '{"error": "access denied: /b/two"}', now - 80, "s2"),
+            ("tool", 1, "read_file", '{"error": "access denied: /b/one"}', now - 80, "s2"),
         ]
         (tmp / "sub").mkdir()
         db2 = _make_db(tmp / "sub", rows2)
         scan2 = scan_failures(state_db=db2, since_ts=0.0, now=now)
-        check("rutas distintas del mismo error → 1 huella",
+        check("el mismo archivo por otra ruta → 1 huella",
               len({f.fingerprint for f in scan2.failures}) == 1,
               f"{len({f.fingerprint for f in scan2.failures})}")
+
+        # Y archivos DISTINTOS no se mezclan: si se mezclaran, un fallo que se arregla
+        # quedaría "vigente" por culpa de otro que sigue roto.
+        rows3 = [
+            ("tool", 1, "read_file", '{"error": "file not found: /w/SCHEMA.md"}', now - 70, "s3"),
+            ("tool", 1, "read_file", '{"error": "file not found: /w/log.md"}', now - 60, "s4"),
+        ]
+        (tmp / "sub2").mkdir()
+        db3 = _make_db(tmp / "sub2", rows3)
+        scan3 = scan_failures(state_db=db3, since_ts=0.0, now=now)
+        check("archivos distintos NO se mezclan",
+              len({f.fingerprint for f in scan3.failures}) == 2,
+              f"{len({f.fingerprint for f in scan3.failures})}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -421,6 +447,79 @@ def test_burst_is_not_a_pattern() -> None:
     check("no quedó clasificado como ráfaga", len(report2.bursts) == 0)
 
 
+def test_stale_not_recurring() -> None:
+    print("\nun patrón que dejó de ocurrir NO es candidato")
+
+    tmp = Path(tempfile.mkdtemp())
+    now = time.time()
+    try:
+        # Recurrente de verdad: repartido en días Y con aparición reciente.
+        filas = [
+            ("tool", 1, "terminal", '{"error": "boom mismo"}', now - 6 * 86400, "v1"),
+            ("tool", 1, "terminal", '{"error": "boom mismo"}', now - 3 * 86400, "v2"),
+            ("tool", 1, "terminal", '{"error": "boom mismo"}', now - 3600, "v3"),
+        ]
+        (tmp / "v").mkdir()
+        db = _make_db(tmp / "v", filas)
+        rep = detect(state_db=db, now=now)
+        check("el vivo es candidato", len(rep.recurring) == 1, str(len(rep.recurring)))
+        check("y no está en caducos", not rep.stale, str(len(rep.stale)))
+
+        # Mismo patrón, pero la última aparición fue hace 20 días: está muerto.
+        filas2 = [
+            ("tool", 1, "terminal", '{"error": "boom viejo"}', now - 26 * 86400, "w1"),
+            ("tool", 1, "terminal", '{"error": "boom viejo"}', now - 23 * 86400, "w2"),
+            ("tool", 1, "terminal", '{"error": "boom viejo"}', now - 20 * 86400, "w3"),
+        ]
+        (tmp / "w").mkdir()
+        db2 = _make_db(tmp / "w", filas2)
+        rep2 = detect(state_db=db2, now=now)
+        check("el caduco NO es candidato", len(rep2.recurring) == 0, str(len(rep2.recurring)))
+        check("queda en el cubo stale", len(rep2.stale) == 1, str(len(rep2.stale)))
+        check("y declara cuánto silencio lleva",
+              abs(rep2.stale[0].silence_days - 20.0) < 0.2,
+              f"{rep2.stale[0].silence_days:.2f}")
+        check("el reparto lo dice", "ya no ocurren" in rep2.summary(), rep2.summary())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stale_boundary() -> None:
+    print("\nla frontera del silencio está donde se declara")
+
+    tmp = Path(tempfile.mkdtemp())
+    now = time.time()
+    try:
+        # Justo dentro del límite: todavía vive.
+        filas = [
+            ("tool", 1, "terminal", '{"error": "limite"}', now - 7 * 86400, "b1"),
+            ("tool", 1, "terminal", '{"error": "limite"}', now - 5 * 86400, "b2"),
+            ("tool", 1, "terminal", '{"error": "limite"}', now - 6.9 * 86400, "b3"),
+        ]
+        (tmp / "b").mkdir()
+        db = _make_db(tmp / "b", filas)
+        rep = detect(state_db=db, now=now)
+        check("justo dentro del límite → vivo", len(rep.recurring) == 1,
+              f"rec={len(rep.recurring)} stale={len(rep.stale)}")
+
+        # Pasado el límite: cruzó.
+        filas2 = [
+            ("tool", 1, "terminal", '{"error": "pasado"}', now - 9 * 86400, "c1"),
+            ("tool", 1, "terminal", '{"error": "pasado"}', now - 8 * 86400, "c2"),
+            ("tool", 1, "terminal", '{"error": "pasado"}', now - 7.1 * 86400, "c3"),
+        ]
+        (tmp / "c").mkdir()
+        db2 = _make_db(tmp / "c", filas2)
+        rep2 = detect(state_db=db2, now=now)
+        check("pasado el límite → caduco", len(rep2.stale) == 1,
+              f"rec={len(rep2.recurring)} stale={len(rep2.stale)}")
+
+        check("MAX_SILENCE_DAYS es un número positivo",
+              isinstance(MAX_SILENCE_DAYS, float) and MAX_SILENCE_DAYS > 0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_is_guardrail_criterion() -> None:
     print("\ncriterio de guardarraíl")
 
@@ -472,6 +571,8 @@ def main() -> int:
         test_single_event_discarded,
         test_loop_in_one_session_is_not_a_pattern,
         test_window_excludes_old_failures,
+        test_stale_not_recurring,
+        test_stale_boundary,
         test_ordering_and_report,
         test_scan_structure_not_text,
         test_scan_survives_missing_db,

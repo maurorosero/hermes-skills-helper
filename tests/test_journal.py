@@ -20,10 +20,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from effect.checker import sha256_text  # noqa: E402
+# El estado ``FAILED`` del journal se importa con alias: este archivo ya usa el nombre
+# ``FAILED`` para su propia lista de tests que fallaron, y sin el alias la comparación
+# quedaría contra esa lista (comparaba 'failed' == []  y siempre daba falso).
+from journal import FAILED as STATE_FAILED  # noqa: E402
 from journal import (  # noqa: E402
     APPLIED,
     PENDING,
     ROLLED_BACK,
+    STAGED,
+    mark_staged,
+    reconcile_staged,
     find_entry,
     health,
     iter_backups,
@@ -268,6 +275,140 @@ def test_pending_is_visible_not_hidden() -> None:
         box.cleanup()
 
 
+def test_staged_is_not_a_broken_write() -> None:
+    print("\nun cambio en cola NO es una escritura rota")
+
+    box = Sandbox()
+    try:
+        contenido_propuesto = CAMBIADO
+        entry = record_before_write(
+            skill_name="demo-skill", skill_path=box.skill_path, action="patch",
+            hermes_home=box.home,
+        )
+        # El arnés encola: el archivo NO cambia.
+        mark_staged(entry, proposed_content=contenido_propuesto, pending_id="abc123",
+                    hermes_home=box.home)
+
+        h = health(hermes_home=box.home)
+        check("NO se reporta como escritura incompleta",
+              h["pending_entries"] == 0, f"pending={h['pending_entries']}")
+        check("se reporta como encolado", h["staged_entries"] == 1,
+              f"staged={h['staged_entries']}")
+        check("expone el id del encolado", len(h["staged_ids"]) == 1)
+
+        estado = find_entry(entry.entry_id, hermes_home=box.home)
+        check("el estado es staged", estado.status == STAGED, estado.status)
+        check("guarda el hash de lo propuesto", bool(estado.proposed_hash))
+        check("guarda el pending_id del arnés", estado.pending_id == "abc123")
+        check("NO es revertible todavía", estado.is_revertible is False)
+
+        r = rollback(entry.entry_id, hermes_home=box.home)
+        check("revertirlo se rechaza con la razón correcta", r.success is False)
+        check("la razón explica que espera aprobación",
+              "cola de aprobación" in r.message, r.message)
+    finally:
+        box.cleanup()
+
+
+def test_reconcile_detects_approval() -> None:
+    print("\nla reconciliación detecta que el arnés aprobó")
+
+    box = Sandbox()
+    try:
+        entry = record_before_write(
+            skill_name="demo-skill", skill_path=box.skill_path, action="patch",
+            hermes_home=box.home,
+        )
+        mark_staged(entry, proposed_content=CAMBIADO, pending_id="p1",
+                    hermes_home=box.home)
+
+        # La cola se inyecta: sin esto el test dependería del disco de quien lo corre.
+        sigue_encolado = lambda pid, sub: True  # noqa: E731
+
+        # Todavía sin aprobar: el archivo está como estaba.
+        r1 = reconcile_staged(hermes_home=box.home, pending_lookup=sigue_encolado)
+        check("sin aprobar, sigue en cola", r1 and r1[0][1] == "todavía en cola",
+              str(r1 and r1[0][1]))
+        check("y NO se marcó como aplicada",
+              find_entry(entry.entry_id, hermes_home=box.home).status == STAGED)
+
+        # Mauro aprueba: el host escribe el contenido propuesto.
+        box.skill_path.write_text(CAMBIADO, encoding="utf-8")
+
+        r2 = reconcile_staged(hermes_home=box.home, pending_lookup=sigue_encolado)
+        check("detecta la aprobación", r2 and r2[0][1] == "aprobado",
+              str(r2 and r2[0][1]))
+        estado = find_entry(entry.entry_id, hermes_home=box.home)
+        check("la entrada pasa a aplicada", estado.status == APPLIED, estado.status)
+        check("con el hash posterior puesto", bool(estado.after_hash))
+        check("y ahora SÍ es revertible", estado.is_revertible is True)
+        check("el journal conservó que estuvo encolada",
+              any(e.status == STAGED for e in read_entries(hermes_home=box.home)))
+
+        check("una segunda reconciliación no duplica nada",
+              not [x for x in reconcile_staged(hermes_home=box.home,
+                                              pending_lookup=sigue_encolado)
+                   if x[1] == "aprobado"])
+    finally:
+        box.cleanup()
+
+
+def test_reconcile_closes_discarded_pending() -> None:
+    print("\nuna propuesta descartada NO queda esperando para siempre")
+
+    box = Sandbox()
+    try:
+        entry = record_before_write(
+            skill_name="demo-skill", skill_path=box.skill_path, action="patch",
+            hermes_home=box.home,
+        )
+        # Un pending que la cola ya NO tiene: se descartó.
+        mark_staged(entry, proposed_content=CAMBIADO, pending_id="pid1",
+                    hermes_home=box.home)
+        check("arranca en staged",
+              find_entry(entry.entry_id, hermes_home=box.home).status == STAGED)
+
+        r = reconcile_staged(hermes_home=box.home,
+                             pending_lookup=lambda pid, sub: False)
+        check("se detecta el descarte", r and r[0][1] == "descartado",
+              str(r and r[0][1]))
+        estado = find_entry(entry.entry_id, hermes_home=box.home)
+        check("la entrada se cierra como failed, no queda en staged",
+              estado.status == STATE_FAILED, estado.status)
+        check("la razón lo declara", "descartado" in estado.reason, estado.reason)
+        check("NO se marca aplicada", estado.status != APPLIED)
+        check("no es revertible (nunca se aplicó)", estado.is_revertible is False)
+
+        h = health(hermes_home=box.home)
+        check("ya no cuenta como encolada", h["staged_entries"] == 0,
+              f"staged={h['staged_entries']}")
+    finally:
+        box.cleanup()
+
+
+def test_reconcile_detects_third_party_edit() -> None:
+    print("\nun tercero que toca el archivo se declara, no se asume")
+
+    box = Sandbox()
+    try:
+        entry = record_before_write(
+            skill_name="demo-skill", skill_path=box.skill_path, action="patch",
+            hermes_home=box.home,
+        )
+        mark_staged(entry, proposed_content=CAMBIADO, pending_id="p1",
+                    hermes_home=box.home)
+        box.skill_path.write_text("lo editó otro proceso\n", encoding="utf-8")
+
+        r = reconcile_staged(hermes_home=box.home,
+                             pending_lookup=lambda pid, sub: True)
+        check("se declara como cambio por otra vía", r and r[0][1] == "cambió por otra vía",
+              str(r and r[0][1]))
+        check("NO se marca aplicada en falso",
+              find_entry(entry.entry_id, hermes_home=box.home).status == STAGED)
+    finally:
+        box.cleanup()
+
+
 def test_double_rollback_refused() -> None:
     print("\nno se revierte dos veces")
 
@@ -372,6 +513,10 @@ def main() -> int:
         test_refuses_without_backup,
         test_detects_corrupt_backup,
         test_pending_is_visible_not_hidden,
+        test_staged_is_not_a_broken_write,
+        test_reconcile_detects_approval,
+        test_reconcile_closes_discarded_pending,
+        test_reconcile_detects_third_party_edit,
         test_double_rollback_refused,
         test_rollback_last,
         test_missing_entry_and_paths,

@@ -79,6 +79,8 @@ try:  # cargado como paquete por el arnés
     from .journal import (
         health as journal_health,
         last_applied,
+        mark_staged,
+        reconcile_staged,
         rollback_last,
         record_after_write,
         record_before_write,
@@ -101,6 +103,8 @@ except ImportError:  # cargado como módulo suelto (tests, ejecución directa)
     from journal import (  # type: ignore
         health as journal_health,
         last_applied,
+        mark_staged,
+        reconcile_staged,
         rollback_last,
         record_after_write,
         record_before_write,
@@ -141,6 +145,7 @@ class PipelineReport:
     ts: float = 0.0
     errors: list = field(default_factory=list)
     trajectory_readable: bool = True
+    reconciled: list = field(default_factory=list)
 
     @property
     def limitation(self) -> str:
@@ -174,8 +179,9 @@ class PipelineReport:
         partes = [f"{prefijo}{self.candidates} fallo(s) recurrente(s) sostenido(s)"]
         if self.recurrence:
             partes.append(
-                f"{len(self.recurrence.guardrails)} rechazo(s) del arnés y "
-                f"{len(self.recurrence.bursts)} ráfaga(s) descartados"
+                f"{len(self.recurrence.guardrails)} rechazo(s) del arnés, "
+                f"{len(self.recurrence.bursts)} ráfaga(s) y "
+                f"{len(self.recurrence.stale)} ya no ocurren: descartados"
             )
         if self.effects:
             partes.append(f"{len(self.effects)} cambio(s) calificado(s)")
@@ -315,6 +321,21 @@ def run_deterministic(
     except Exception as exc:
         report.errors.append(f"recurrencia: {exc}")
         report.trajectory_readable = False
+
+    # --- Reconciliación: los cambios encolados que el arnés ya aplicó -------------
+    # El gate de aprobación es del host: cuando Mauro aprueba, el archivo cambia sin
+    # avisarle a este plugin. Sin reconciliar, una entrada quedaría en ``staged`` para
+    # siempre y la etapa 5 —que califica cambios APLICADOS— nunca vería nada que medir.
+    try:
+        report.reconciled = reconcile_staged(hermes_home=hermes_home)
+        aprobados = [e for e, desenlace in report.reconciled if desenlace == "aprobado"]
+        if aprobados:
+            logger.info(
+                "hermes-skills-helper: %d cambio(s) aprobado(s) por el arnés pasaron a "
+                "aplicados", len(aprobados),
+            )
+    except Exception as exc:
+        report.errors.append(f"reconciliación: {exc}")
 
     # --- Etapa 5: ¿sirvió? -------------------------------------------------------
     try:
@@ -540,6 +561,16 @@ def review_candidate(
     # Si el arnés deja el cambio en cola, el archivo NO se modificó: registrar el estado
     # ``applied`` sería afirmar un cambio que no ocurrió.
     if isinstance(parsed, dict) and parsed.get("staged"):
+        # La entrada se marca ``staged``, NO se deja en ``pending``. Son cosas distintas:
+        # ``pending`` es una escritura que no se completó (un hallazgo), ``staged`` es una
+        # propuesta esperando la aprobación de Mauro. Dejarla en ``pending`` mostraría una
+        # escritura rota por cada propuesta en cola.
+        mark_staged(
+            entrada,
+            proposed_content=nuevo_contenido,
+            pending_id=parsed.get("pending_id"),
+            hermes_home=hermes_home,
+        )
         resultado["stage"] = "en cola de aprobación del arnés"
         resultado["applied"] = False
         resultado["message"] = parsed.get("message", "queda pendiente de aprobación")

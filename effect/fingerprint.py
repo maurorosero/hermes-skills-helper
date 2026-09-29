@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 #: Sube cuando cambia cualquier regla de normalización de abajo. Una huella guardada
 #: con otra versión no es comparable con una recién calculada.
-NORMALIZATION_VERSION = 1
+NORMALIZATION_VERSION = 2
 
 # Orden importa: lo más específico primero, para que una regla no consuma el texto
 # que otra necesita.
@@ -52,14 +52,21 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I), "<id>"),
     (re.compile(r"\b[0-9a-f]{16,}\b", re.I), "<hash>"),
     (re.compile(r"(?<=[:#/])[0-9]{2,}\b"), "<n>"),
-    # Rutas: absolutas y de perfil. El path exacto no distingue el fallo.
-    (re.compile(r"(?:/[\w.@+-]+){2,}/?"), "<path>"),
-    (re.compile(r"\b[A-Za-z]:\\[^\s]+"), "<path>"),
+    # Rutas: se tapa el directorio y se CONSERVA el último segmento. El directorio es
+    # ruido (cambia con la máquina y con el orden), pero el nombre del archivo ES la
+    # identidad del fallo: `File not found: <path>/SCHEMA.md` y `<path>/log.md` no se
+    # arreglan igual. Tapar la ruta entera agrupaba 18 fallos sin relación bajo una sola
+    # huella (medido sobre state.db real: 25 apariciones -> 18 textos distintos).
+    (re.compile(r"(?:/[\w.@+-]+)+/(?=[\w.@+-])"), "<path>/"),
+    (re.compile(r"\b[A-Za-z]:\\(?:[^\s\\]+\\)*(?=[^\s\\])"), "<path>"),
     # Puertos, versiones y direcciones: varían sin cambiar la causa.
     (re.compile(r"\b(?:localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b"), "<host>"),
     (re.compile(r"\bv?\d+\.\d+(?:\.\d+)*\b"), "<ver>"),
-    # Números sueltos al final del mensaje (contadores, tamaños, duraciones).
-    (re.compile(r"\b\d+\b"), "<n>"),
+    # Números sueltos (contadores, tamaños, duraciones): varían sin cambiar la causa.
+    # Se exceptúa `exit_code` / `exit_status`: NO son contadores, son la identidad del
+    # fallo — 124 es un timeout, 127 es "comando no encontrado" y 1 es un fallo genérico.
+    # Colapsarlos agrupaba 8 fallos distintos bajo una misma huella.
+    (re.compile(r"(?<!exit_code=)(?<!exit_status=)\b\d+\b"), "<n>"),
 )
 
 

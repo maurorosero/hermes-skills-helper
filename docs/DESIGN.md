@@ -74,16 +74,41 @@ ráfagas         apariciones concentradas en horas. El caso que lo destapó: 37
 
 Ambos se reportan en lugar de descartarse en silencio, para que el descarte sea auditable.
 
+**Tercera corrección, del ciclo fin a fin.** Con los dos filtros anteriores, el ciclo
+corrió completo por primera vez y **propuso un cambio sobre un fallo muerto**: un
+`File not found: wiki/SCHEMA.md` cuya última aparición había sido 14,5 días atrás — porque
+el archivo se creó *después*. Proponer ahí gasta presupuesto, toca un skill, y el "éxito"
+posterior no prueba nada: el fallo ya estaba resuelto antes del cambio.
+
+```
+caducos     el patrón existe en el histórico pero ya no ocurre. Se mide contra el
+            SILENCIO (cuándo fue la última vez), no contra el span: un fallo puede
+            llevar meses vivo apareciendo cada tres semanas. De ahí MAX_SILENCE_DAYS.
+            MEDIDO: 5 de 8 candidatos llevaban más de 7 días sin aparecer.
+```
+
+**Cuarta corrección — las huellas mezclaban fallos distintos.** Medido sobre la
+trayectoria real: la normalización tapaba la ruta entera y los números sueltos, así que
+`File not found: /a/SCHEMA.md` y `File not found: /b/log.md` producían **la misma huella**
+(25 apariciones → **18 fallos sin relación** bajo una sola). Igual con `exit_code=1` y
+`exit_code=124` (51 apariciones → 8 fallos distintos). 16 % del total. Un grupo así se
+vuelve un candidato Frankenstein: el fallo A lo mantiene "vivo" mientras el B se sigue
+rompiendo, y el cambio propuesto no corresponde a ninguno de los dos. Se conserva el
+último segmento de la ruta y se exceptúan `exit_code`/`exit_status`.
+
 **Efecto sobre el resultado real:**
 
 ```
-antes   17 "recurrentes"  (7 legítimos + 7 rechazos del arnés + 3 ráfagas)
-ahora    7 recurrentes · 3 ráfagas · 16 rechazos del arnés · 83 eventos únicos
+antes     17 "recurrentes"  (7 legítimos + 7 rechazos del arnés + 3 ráfagas)
+después    7 recurrentes · 3 ráfagas · 16 rechazos del arnés · 83 eventos únicos
+ahora      3 candidatos vivos · 5 caducos · 3 ráfagas · 16 rechazos del arnés
 ```
 
-Los 7 candidatos son fallos propios y sostenidos en el tiempo — un `SCHEMA.md` que no
-existe, un timeout de 60s, un error de forma en `tool_call`, un tope de memoria excedido,
-etc. Esos son los que justificarían un cambio de conducta.
+Los 3 candidatos vivos son fallos propios y recientes: un error de forma en `tool_call`,
+un `Traceback` de `execute_code`, y una advertencia de envoltorio de shell en `terminal`.
+Un `SCHEMA.md` que ya existe, un timeout de 60s que no se repite desde hace diez días y un
+tope de memoria que ya no se toca quedaron en el cubo `stale` — con su motivo, no
+borrados.
 
 ## Etapa 2 — Techo (determinista)
 

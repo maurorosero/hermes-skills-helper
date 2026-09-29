@@ -86,6 +86,8 @@ Si este trabajo resulta útil, el mérito del enfoque es de él.
 ```
 1. RECURRENCIA   ¿este fallo se repite?          determinista
                  fingerprint del error + umbral; si no se repite → STOP
+                 tres descartes medidos: guardarraíl, ráfaga, y caduco
+                 (un fallo que dejó de ocurrir no se arregla con un cambio de hoy)
 
 2. TECHO         ¿queda presupuesto hoy?         determinista
                  ≤ 3 cambios/día · ≤ 30 llamadas/día
@@ -122,7 +124,9 @@ una comparación cambia una verificación reproducible por una opinión.
 
 ```
 5. ¿SIRVIÓ?      implementada   49 tests · verificado contra el registro real
-1. RECURRENCIA   implementada   64 tests · 17 → 7 falsos positivos corregidos
+1. RECURRENCIA   implementada   76 tests · de 17 falsos positivos a 3 candidatos
+                                (filtros: guardarraíl, ráfaga, caduco; y las huellas
+                                 ya no mezclan fallos distintos)
 4. JOURNAL       implementada   51 tests · rollback verificado por hash
 2. TECHO         implementada   59 tests · carrera medida y cerrada
 3. PROPUESTA     implementada   92 tests · verificada con llamadas reales

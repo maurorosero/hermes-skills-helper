@@ -40,7 +40,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 try:  # cargado como paquete por el arnés
     from .effect.checker import sha256_text
@@ -56,7 +56,20 @@ JOURNAL_FILE_NAME = "journal.jsonl"
 BACKUPS_DIR_NAME = "backups"
 
 #: Estados de una entrada. ``applied`` es el único que habilita un rollback.
+#:
+#: ``pending`` y ``staged`` NO son lo mismo, y confundirlos produce dos errores a la vez:
+#:
+#: ``pending``  la escritura se empezó y no se completó. Es un problema: hay un respaldo
+#:              sin cambio, y el diagnóstico debe reportarlo.
+#: ``staged``   la escritura no fue rechazada: quedó **en cola de aprobación del arnés**.
+#:              No es un problema y no hay nada que revertir — todavía. Cuando Mauro
+#:              apruebe (o rechace), el skill cambia sin que este módulo se entere: el
+#:              gate es del host. De ahí ``proposed_hash`` y la reconciliación.
+#:
+#: Reportar un ``staged`` como ``pending`` mostraría una escritura rota para cada
+#: propuesta esperando aprobación — una alarma falsa en el diagnóstico que más se mira.
 PENDING = "pending"
+STAGED = "staged"
 APPLIED = "applied"
 ROLLED_BACK = "rolled_back"
 FAILED = "failed"
@@ -83,6 +96,13 @@ class JournalEntry:
     rolled_back_ts: Optional[float] = None
     reason: str = ""
     metadata: dict = field(default_factory=dict)
+    #: Hash del contenido que se PROPUSO, cuando el arnés dejó el cambio en cola. Es lo
+    #: que permite reconciliar después: el gate del host aplica el cambio sin avisar a
+    #: este plugin, así que la única forma de saber si se aprobó es comparar el archivo
+    #: contra lo que se propuso.
+    proposed_hash: Optional[str] = None
+    #: Identificador que el arnés le dio al cambio en su cola, para poder correlacionarlo.
+    pending_id: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
@@ -96,6 +116,11 @@ class JournalEntry:
     def is_revertible(self) -> bool:
         """¿Se puede revertir? Solo si se aplicó, no se revirtió, y hay respaldo."""
         return self.status == APPLIED and bool(self.backup_file)
+
+    @property
+    def is_staged(self) -> bool:
+        """¿Espera aprobación del arnés? Sin aplicar todavía, nada que revertir."""
+        return self.status == STAGED
 
 
 @dataclass(frozen=True)
@@ -297,6 +322,147 @@ def record_after_write(entry: JournalEntry, *, new_content: str, hermes_home: Pa
     return applied
 
 
+def mark_staged(
+    entry: JournalEntry,
+    *,
+    proposed_content: str,
+    pending_id: Optional[str],
+    hermes_home: Path,
+) -> JournalEntry:
+    """Marca que el arnés **encoló** el cambio en lugar de aplicarlo.
+
+    Un ``staged`` no es una escritura incompleta: es una propuesta esperando la aprobación
+    de Mauro. Se guarda el hash de lo propuesto porque el gate es del host y aplicará el
+    cambio **sin avisar a este módulo**: comparar el archivo contra ese hash es la única
+    forma de saber, después, si se aprobó.
+    """
+    staged = JournalEntry(
+        **{
+            **asdict(entry),
+            "status": STAGED,
+            "proposed_hash": sha256_text(proposed_content),
+            "pending_id": pending_id,
+        }
+    )
+    append_rollback_marker(staged, hermes_home=hermes_home)
+    return staged
+
+
+def _pending_lookup_default(pending_id: str, subsystem: str) -> bool:
+    """¿Sigue ese pending en la cola del arnés? La consulta real.
+
+    Si la cola no se puede consultar, se responde ``True``: es la lectura conservadora.
+    Asumir que algo fue descartado cuando no se pudo verificar cerraría una entrada que
+    todavía podía aprobarse.
+    """
+    try:
+        from tools.write_approval import get_pending  # noqa: PLC0415
+
+        return get_pending(subsystem, pending_id) is not None
+    except Exception as exc:
+        logger.debug("No se pudo consultar la cola del arnés: %s", exc)
+        return True
+
+
+def _pending_state(
+    pending_id: Optional[str],
+    *,
+    subsystem: str = "skills",
+    lookup: Optional[Callable[[str, str], bool]] = None,
+) -> str:
+    """Estado del cambio en la cola del arnés: ``encolado`` / ``descartado`` / ``sin-id``.
+
+    Distinguir "sigue en cola" de "ya no está" es lo que evita que una entrada quede
+    esperando para siempre.
+
+    La consulta es **inyectable** (``lookup``) y no se llama directo: sin eso, la
+    reconciliación dependería del estado real de la cola del arnés, y sus tests pasarían o
+    fallarían según lo que hubiera en el disco de quien los corre. Un test que depende del
+    entorno no prueba el código, prueba la máquina.
+    """
+    if not pending_id:
+        return "sin-id"
+    consulta = lookup or _pending_lookup_default
+    return "encolado" if consulta(pending_id, subsystem) else "descartado"
+
+
+def reconcile_staged(
+    *,
+    hermes_home: Path,
+    pending_lookup: Optional[Callable[[str, str], bool]] = None,
+) -> list:
+    """Detecta los cambios encolados que el arnés aplicó o rechazó, y los registra.
+
+    El gate de aprobación es del host: cuando Mauro aprueba en ``/skills pending``, el
+    archivo cambia y este módulo no se entera. Sin esta reconciliación, el journal
+    quedaría diciendo ``staged`` para siempre, y la etapa 5 —que califica los cambios
+    **aplicados**— nunca vería nada que medir.
+
+    Devuelve las entradas reconciliadas, con su desenlace.
+    """
+    resultado = []
+    efectivas: dict[str, JournalEntry] = {}
+    for entry in read_entries(hermes_home=hermes_home):
+        efectivas[entry.entry_id] = entry
+
+    for entry in efectivas.values():
+        if entry.status != STAGED or not entry.proposed_hash:
+            continue
+        skill_path = Path(entry.skill_path)
+        if not skill_path.is_file():
+            continue
+        try:
+            actual = sha256_text(skill_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("No se pudo reconciliar %s: %s", entry.entry_id, exc)
+            continue
+
+        # ¿El pending sigue en la cola del arnés? Sin esto, una propuesta que Mauro
+        # DESCARTÓ (o que se perdió con su cola) se reportaría como "todavía en cola"
+        # para siempre, y el journal mentiría sobre un cambio que ya no va a ocurrir.
+        estado_cola = _pending_state(entry.pending_id, lookup=pending_lookup)
+
+        if actual == entry.proposed_hash:
+            # Se aprobó: el archivo ahora tiene lo propuesto. El hash "posterior" es el
+            # propuesto, y desde acá la entrada vuelve a ser un cambio normal, calificable
+            # por la etapa 5.
+            aplicada = JournalEntry(
+                **{
+                    **asdict(entry),
+                    "status": APPLIED,
+                    "after_hash": entry.proposed_hash,
+                    "reason": (entry.reason + " | aprobado por el arnés").strip(" |"),
+                }
+            )
+            append_rollback_marker(aplicada, hermes_home=hermes_home)
+            resultado.append((aplicada, "aprobado"))
+        elif actual == entry.before_hash:
+            if estado_cola == "descartado":
+                # El pending ya no está en la cola y el archivo sigue intacto: se
+                # descartó. Se cierra la entrada para que no quede esperando algo que no
+                # va a pasar — un ``staged`` eterno es una mentira silenciosa.
+                cerrada = JournalEntry(
+                    **{
+                        **asdict(entry),
+                        "status": FAILED,
+                        "reason": (entry.reason + " | descartado en la cola del arnés"
+                                   ).strip(" |"),
+                    }
+                )
+                append_rollback_marker(cerrada, hermes_home=hermes_home)
+                resultado.append((cerrada, "descartado"))
+            else:
+                # Sigue intacto y el pending sigue encolado: la aprobación todavía no
+                # ocurrió. No se toca nada, y NO se reporta como problema: esperar no es
+                # fallar.
+                resultado.append((entry, "todavía en cola"))
+        else:
+            # El archivo cambió por otra vía: ni lo propuesto ni lo previo. Alguien más lo
+            # tocó. Se declara en lugar de asumir cualquiera de los dos desenlaces.
+            resultado.append((entry, "cambió por otra vía"))
+    return resultado
+
+
 def rollback(entry_id: str, *, hermes_home: Path, force: bool = False) -> RollbackResult:
     """Devuelve un skill a su estado previo, byte a byte.
 
@@ -318,6 +484,12 @@ def rollback(entry_id: str, *, hermes_home: Path, force: bool = False) -> Rollba
         return RollbackResult(False, entry_id, "no existe una entrada con ese id")
     if entry.status == ROLLED_BACK:
         return RollbackResult(False, entry_id, "esa entrada ya fue revertida")
+    if entry.is_staged:
+        return RollbackResult(
+            False, entry_id,
+            "el cambio está en la cola de aprobación del arnés, no aplicado: no hay nada "
+            "que revertir todavía",
+        )
     if entry.status != APPLIED:
         return RollbackResult(
             False, entry_id,
@@ -421,16 +593,20 @@ def health(*, hermes_home: Path) -> dict:
     estados = tuple(effective.values())
     revertibles = [e for e in estados if e.is_revertible]
     pendientes = [e for e in estados if e.status == PENDING]
+    encolados = [e for e in estados if e.is_staged]
     return {
         "journal_path": str(path),
         "exists": path.is_file(),
         "entries": len(entries),
         "changes": len(estados),
         "revertible_entries": len(revertibles),
+        # ``pending`` es una escritura que no se completó: un hallazgo.
         "pending_entries": len(pendientes),
+        # ``staged`` es una propuesta esperando aprobación: NO es un problema. Van en
+        # campos distintos porque significan cosas distintas.
+        "staged_entries": len(encolados),
+        "staged_ids": [e.entry_id for e in encolados],
         "rolled_back": len([e for e in estados if e.status == ROLLED_BACK]),
-        # Un ``pending`` que quedó así es una escritura que no se completó: es un
-        # hallazgo, no un detalle.
         "pending_ids": [e.entry_id for e in pendientes],
     }
 
@@ -447,6 +623,7 @@ __all__ = [
     "JOURNAL_FILE_NAME",
     "BACKUPS_DIR_NAME",
     "PENDING",
+    "STAGED",
     "APPLIED",
     "ROLLED_BACK",
     "FAILED",
@@ -459,6 +636,9 @@ __all__ = [
     "take_backup",
     "record_before_write",
     "record_after_write",
+    "FAILED",
+    "mark_staged",
+    "reconcile_staged",
     "rollback",
     "rollback_last",
     "health",

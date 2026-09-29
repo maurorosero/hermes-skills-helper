@@ -80,8 +80,24 @@ def test_normalization() -> None:
     check("timestamps distintos colapsan", ts1 == ts2, f"{ts1!r} != {ts2!r}")
 
     p1 = normalize_error("cannot open /home/andrea/developers/a/b.md")
-    p2 = normalize_error("cannot open /home/andrea/other/c.md")
-    check("rutas distintas colapsan", p1 == p2, f"{p1!r} != {p2!r}")
+    p2 = normalize_error("cannot open /home/andrea/other/b.md")
+    check("el mismo archivo en otro directorio colapsa", p1 == p2, f"{p1!r} != {p2!r}")
+
+    # El último segmento de la ruta ES la identidad del fallo (medido sobre state.db
+    # real: tapar la ruta entera agrupaba 18 fallos sin relación bajo una huella).
+    q1 = normalize_error("File not found: /home/andrea/wiki/SCHEMA.md")
+    q2 = normalize_error("File not found: /home/andrea/wiki/log.md")
+    check("archivos distintos NO colapsan", q1 != q2, f"{q1!r} == {q2!r}")
+    check("y el nombre del archivo sobrevive", "schema.md" in q1 and "log.md" in q2,
+          f"{q1!r} / {q2!r}")
+
+    # exit_code no es un contador: es la identidad del fallo.
+    e1 = normalize_error("exit_code=1")
+    e2 = normalize_error("exit_code=124")
+    check("exit_code distintos NO colapsan", e1 != e2, f"{e1!r} == {e2!r}")
+    check("el código sobrevive", "124" in e2, e2)
+    check("pero un contador corriente sí colapsa",
+          normalize_error("read 5 rows") == normalize_error("read 9 rows"))
 
     # El aviso de bucle de herramientas es instrumentación del arnés: se quita.
     with_warning = normalize_error(
