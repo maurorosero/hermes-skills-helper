@@ -1,0 +1,10 @@
+name: hermes-learning-helper
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: "Capa de medición para la auto-mejora del arnés: encuentra fallos que se repiten entre sesiones, propone UN cambio mínimo (skill/memoria/prompt) y califica si sirvió. No toca el núcleo de Hermes."
+author: Mauro Rosero
+license: MIT
+homepage: https://github.com/maurorosero/hermes-learning-helper
+kind: standalone
+provides_hooks: [on_session_end]
