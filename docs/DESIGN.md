@@ -105,6 +105,51 @@ ventana de carrera. Debe resolverse con bloqueo, no ignorarse.
 
 **Criterio de cierre:** con el techo agotado, ninguna llamada al modelo ocurre.
 
+### Estado de la implementación (etapa 2)
+
+Implementada en `budget.py`, con `tests/test_budget.py` (59 tests),
+`tests/medicion_budget.py` (concurrencia real) y `tests/control_negativo_budget.py`.
+
+**La carrera, medida y cerrada.** El aviso venía heredado; acá está el número. Verificado
+en el arnés que la fachada de estado del host (`PluginState`) hace atómico *cada* acceso
+pero **no** la secuencia entre ellos: `get` toma el bloqueo y lo suelta, `set` toma el
+bloqueo y lo suelta. La ventana queda en el medio. Con 12 procesos y el techo en 3:
+
+```
+sin bloqueo     12 cargos en disco · 12 concesiones · techo 3  →  9 de más
+con bloqueo      3 cargos en disco ·  3 concesiones · techo 3  →  exacto
+```
+
+El control negativo existe para que el test positivo signifique algo: un test de
+concurrencia que pasa no prueba nada si el escenario no tenía carrera.
+
+**La ventana cerrada** es la secuencia entera —leer, decidir, anotar y soltar— dentro de
+una sección crítica, con el bloqueo en un archivo propio (si se bloqueara el libro mismo,
+un reemplazo atómico cambiaría el inodo y el bloqueo quedaría sobre un descriptor
+huérfano). Mismo enfoque que el arnés usa para su registro de uso, implementado acá con
+`fcntl`/`msvcrt` para no depender de internos que pueden cambiar sin aviso.
+
+**Un defecto que solo apareció midiendo.** La primera versión sumaba las líneas ilegibles
+al contador de **todos** los días. Consecuencia: un byte corrupto gastaba un lugar cada
+día, para siempre — el aprendizaje habría quedado apagado por un problema de formato. La
+versión correcta atribuye la corrupción **a un día** (el de la última fila legible, o el
+de la última modificación del archivo si no hay ninguna): cuesta un lugar hoy, no puede
+tapar un gasto, y mañana el libro arranca limpio sin borrar evidencia.
+
+**Contar sobre estado efectivo, otra vez.** Las reservas van a un libro append-only, así
+que liberar un token (una llamada que falló y no consumió) agrega una línea `released` en
+lugar de reescribir la `charged`. El conteo se hace sobre el estado efectivo por token —
+la última marca gana—, que es la misma lección de la etapa 4 aplicada antes de tropezar
+con ella.
+
+**El día es una etiqueta, no una resta.** Se guarda `AAAA-MM-DD` local en la reserva. Un
+cambio de horario o una reserva a las 23:59 no mueven su propia entrada de día.
+
+**Techos por configuración, con piso explícito.** `ceilings_from_config` lee
+`max_edits_per_day` y `max_model_runs_per_day` con los defectos 3 y 30. Un valor absurdo
+(0, negativo, no numérico) cae al defecto **y se avisa**: corregirlo en silencio dejaría a
+quien lo configuró convencido de que su número rige.
+
 ## Etapa 3 — Propuesta (la única con modelo)
 
 **Pregunta:** ¿cuál es el cambio mínimo que evita que este fallo se repita?
