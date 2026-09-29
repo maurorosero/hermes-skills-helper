@@ -127,8 +127,25 @@ una comparación cambia una verificación reproducible por una opinión.
 2. TECHO         implementada   59 tests · carrera medida y cerrada
 3. PROPUESTA     implementada   92 tests · verificada con llamadas reales
 
-las cinco etapas están implementadas
+las cinco etapas están implementadas y el plugin está cableado
 ```
+
+## Qué registra, y qué no
+
+```
+on_session_end    el ciclo DETERMINISTA (etapas 1, 2 y 5). Nunca llama al modelo.
+skills_review     propone UN cambio mínimo. Único camino que gasta presupuesto.
+skills_undo       revierte el último cambio aplicado (etapa 4).
+```
+
+El hook corre por turno, así que **no propone**: un gancho que llamara al modelo en
+cada turno gastaría el techo de costo en la primera hora de conversación. Corre lo
+determinista, con un intervalo mínimo entre barridos (~0,30 s el barrido completo).
+
+**La aplicación pasa por el gate de aprobación del arnés.** Verificado que
+`skills.write_approval: true` está encendido y que `skill_manage` deja el cambio en
+cola (`staged`) sin tocar el archivo. Si esa vía no está disponible, el plugin falla en
+lugar de escribir por atajo — saltarse la aprobación de Mauro no es una optimización.
 ```
 
 Se empezó por la medición a propósito: sin poder calificar un cambio, aplicar cambios es
@@ -149,6 +166,8 @@ python3 tests/control_negativo_budget.py # la carrera SIN bloqueo, para saber qu
 python3 tests/test_proposal.py          # 92 tests de la etapa 3 (modelo simulado)
 python3 tests/medicion_proposal.py      # llamada REAL: el camino no_op
 python3 tests/medicion_proposal_patch.py # llamada REAL: el camino patch
+python3 tests/test_pipeline.py          # 80 tests del cableado
+python3 tests/medicion_cableado.py      # el arnés carga, registra y corre el plugin
 ```
 
 Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está

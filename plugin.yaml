@@ -1,5 +1,5 @@
 name: hermes-skills-helper
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: "Capa de medición para la auto-mejora de los skills del arnés: encuentra fallos que se repiten entre sesiones, propone UN cambio mínimo en un skill y califica si sirvió. No toca el núcleo de Hermes."
@@ -7,3 +7,12 @@ author: Mauro Rosero
 license: MIT
 homepage: https://github.com/maurorosero/hermes-skills-helper
 kind: standalone
+
+# El manifest declara exactamente lo que `register()` registra. Un hook o tool declarado
+# y no registrado produce un aviso del validador, y anunciar una capacidad que no existe
+# es la clase de detalle que hace desconfiar del resto.
+provides_hooks:
+  - on_session_end
+provides_tools:
+  - skills_review
+  - skills_undo
