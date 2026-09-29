@@ -7,4 +7,3 @@ author: Mauro Rosero
 license: MIT
 homepage: https://github.com/maurorosero/hermes-learning-helper
 kind: standalone
-provides_hooks: [on_session_end]
