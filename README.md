@@ -123,15 +123,38 @@ una comparación cambia una verificación reproducible por una opinión.
 ## Estado
 
 ```
-5. ¿SIRVIÓ?      implementada   49 tests · verificado contra el registro real
+5. ¿SIRVIÓ?      implementada   54 tests · califica TODOS los cambios aplicados
+                                (antes solo el último: los anteriores quedaban sin veredicto)
 1. RECURRENCIA   implementada   76 tests · de 17 falsos positivos a 3 candidatos
                                 (filtros: guardarraíl, ráfaga, caduco; y las huellas
                                  ya no mezclan fallos distintos)
-4. JOURNAL       implementada   51 tests · rollback verificado por hash
+4. JOURNAL       implementada   84 tests · rollback verificado por hash
 2. TECHO         implementada   59 tests · carrera medida y cerrada
-3. PROPUESTA     implementada   92 tests · verificada con llamadas reales
+3. PROPUESTA     implementada  104 tests · verificada con llamadas reales
 
-las cinco etapas están implementadas y el plugin está cableado
+470 tests en total. Las cinco etapas están implementadas y el plugin está cableado.
+
+Tres correcciones que salieron de medir, no de razonar
+-------------------------------------------------------
+El techo de CAMBIOS nunca se cobraba. ``KIND_EDIT`` sólo aparecía en los tests del propio
+``budget``: el número "<= 3 cambios/día" estaba escrito en el diseño y jamás se aplicó. Con
+presupuesto de inferencia disponible se podían aplicar cambios sin límite. Ahora el lugar
+se reserva antes de la primera escritura y se libera si la escritura falla, si el arnés deja
+el cambio en cola, o si el arnés lo rechaza — un cambio que no ocurrió no puede gastar el
+techo del día.
+
+La etapa 5 calificaba un solo cambio. ``grade_applied_changes`` decía "cada cambio aplicado"
+en su docstring y usaba ``last_applied``, que devuelve uno: con tres cambios aplicados, dos
+quedaban sin veredicto para siempre. Ahora recorre ``applied_entries``.
+
+Las muestras del fallo se repetían. Medido sobre el candidato real: las tres muestras que
+recibía el modelo eran el mismo texto, así que dos tercios del presupuesto de evidencia se
+gastaban repitiendo una línea — y el modelo creía tener tres datos donde había uno. Se
+deduplican antes de recortar, conservando el orden.
+
+Y el modelo ya no propone a ciegas: ``build_prompt`` incluye los intentos previos sobre ese
+skill leídos del journal (rechazados, fallidos y revertidos). El dato se venía registrando
+desde la etapa 4 y nadie lo leía.
 ```
 
 ## Qué registra, y qué no

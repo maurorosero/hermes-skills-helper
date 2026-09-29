@@ -24,6 +24,8 @@ from effect.checker import sha256_text  # noqa: E402
 # ``FAILED`` para su propia lista de tests que fallaron, y sin el alias la comparación
 # quedaría contra esa lista (comparaba 'failed' == []  y siempre daba falso).
 from journal import FAILED as STATE_FAILED  # noqa: E402
+from journal import applied_entries  # noqa: E402
+from journal import last_applied  # noqa: E402
 from journal import (  # noqa: E402
     APPLIED,
     PENDING,
@@ -409,6 +411,55 @@ def test_reconcile_detects_third_party_edit() -> None:
         box.cleanup()
 
 
+def test_applied_entries_returns_all_not_just_the_last() -> None:
+    print("\napplied_entries devuelve TODAS las aplicadas, no solo la ultima")
+
+    box = Sandbox()
+    try:
+        ids = []
+        for i in range(3):
+            sp = box.root / f"s{i}" / "SKILL.md"
+            sp.parent.mkdir(parents=True)
+            sp.write_text(f"contenido {i}\n", encoding="utf-8")
+            e = record_before_write(skill_name=f"s{i}", skill_path=sp, action="patch",
+                                    hermes_home=box.home)
+            record_after_write(e, new_content=f"nuevo {i}\n", hermes_home=box.home)
+            ids.append(e.entry_id)
+
+        todas = applied_entries(hermes_home=box.home)
+        check("estan las tres", len(todas) == 3, f"{len(todas)}")
+        check("y son las correctas", {e.entry_id for e in todas} == set(ids))
+
+        # last_applied devuelve una: por eso la etapa 5 calificaba solo la ultima.
+        check("last_applied devuelve una sola",
+              len([last_applied(hermes_home=box.home)]) == 1)
+
+        # Filtrar por skill sigue funcionando.
+        una = applied_entries(hermes_home=box.home, skill_name="s1")
+        check("el filtro por skill funciona", len(una) == 1, f"{len(una)}")
+        check("y es la pedida", una[0].skill_name == "s1", una[0].skill_name)
+    finally:
+        box.cleanup()
+
+
+def test_applied_entries_excludes_rolled_back() -> None:
+    print("\nuna entrada revertida NO cuenta como aplicada")
+
+    box = Sandbox()
+    try:
+        e = record_before_write(skill_name="demo", skill_path=box.skill_path,
+                                action="patch", hermes_home=box.home)
+        record_after_write(e, new_content="nuevo\n", hermes_home=box.home)
+        check("aparece aplicada", len(applied_entries(hermes_home=box.home)) == 1)
+
+        rollback(e.entry_id, hermes_home=box.home, force=True)
+        check("tras revertir, ya no aparece",
+              len(applied_entries(hermes_home=box.home)) == 0,
+              f"{len(applied_entries(hermes_home=box.home))}")
+    finally:
+        box.cleanup()
+
+
 def test_double_rollback_refused() -> None:
     print("\nno se revierte dos veces")
 
@@ -514,6 +565,8 @@ def main() -> int:
         test_detects_corrupt_backup,
         test_pending_is_visible_not_hidden,
         test_staged_is_not_a_broken_write,
+        test_applied_entries_returns_all_not_just_the_last,
+        test_applied_entries_excludes_rolled_back,
         test_reconcile_detects_approval,
         test_reconcile_closes_discarded_pending,
         test_reconcile_detects_third_party_edit,

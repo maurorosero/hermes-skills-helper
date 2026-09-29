@@ -414,6 +414,112 @@ def test_review_applies_through_host_and_records() -> None:
         box.cleanup()
 
 
+def _aplicar(box, *, apply=True, staged=False, accion="patch"):
+    """Corre review_candidate por la via del tool, con el host simulado."""
+    ancla = "Para rutas, pasar origen y destino."
+    texto_nuevo = ancla + " Verificar que el origen exista."
+    parsed = (
+        _patch_response(ancla, texto_nuevo)
+        if accion == "patch"
+        else {"action": "no_op", "justification": "no corresponde", "expected": "nada"}
+    )
+    llm = FakeLlm(FakeResult(parsed=parsed))
+    escrituras = []
+
+    def skills_manage(**kwargs):
+        escrituras.append(kwargs)
+        if not staged:
+            box.skill_path().write_text(kwargs["content"], encoding="utf-8")
+        return json.dumps(
+            {"success": True, "staged": True, "pending_id": "abc123"}
+            if staged
+            else {"success": True}
+        )
+
+    resultado = pipeline.review_candidate(
+        failure=_failure(), skill_name="maps", llm=llm, hermes_home=box.home,
+        skills_dirs=[box.skills], apply=apply, skills_manage=skills_manage,
+    )
+    return resultado, escrituras
+
+
+def test_apply_charges_the_edit_ceiling() -> None:
+    print("\naplicar un cambio consume un lugar del techo de CAMBIOS, no solo el de llamadas")
+
+    box = Sandbox(con_skill=True)
+    try:
+        import budget  # noqa: PLC0415
+        antes = budget.status(hermes_home=box.home)
+        check("arranca sin cambios cobrados", antes.edits_used == 0, str(antes.edits_used))
+
+        resultado, _ = _aplicar(box)
+        check("se aplico", resultado.get("applied") is True, str(resultado)[:120])
+
+        despues = budget.status(hermes_home=box.home)
+        check("el cambio queda cobrado en el techo de cambios",
+              despues.edits_used == 1,
+              f"edits_used={despues.edits_used} (antes el techo de cambios no se cobraba)")
+        check("y queda lugar para 2 mas hoy", despues.edits_left == 2, str(despues.edits_left))
+    finally:
+        box.cleanup()
+
+
+def test_edit_ceiling_blocks_the_apply() -> None:
+    print("\ncon el techo de cambios agotado, el cambio NO se aplica ni llega al host")
+
+    box = Sandbox(con_skill=True)
+    try:
+        import budget  # noqa: PLC0415
+        for i in range(3):
+            budget.reserve(budget.KIND_EDIT, hermes_home=box.home, note=f"cambio {i+1}")
+
+        resultado, escrituras = _aplicar(box)
+
+        check("no se aplica", resultado.get("applied") is not True,
+              f"applied={resultado.get('applied')}")
+        check("ni llega al host", not escrituras, f"{len(escrituras)} escritura(s)")
+        check("y lo dice", "cambio" in str(resultado).lower(), str(resultado)[:160])
+
+        despues = budget.status(hermes_home=box.home)
+        check("no se cobro de mas: siguen 3", despues.edits_used == 3, str(despues.edits_used))
+    finally:
+        box.cleanup()
+
+
+def test_no_op_does_not_charge_an_edit() -> None:
+    print("\nuna propuesta que no cambia nada NO consume el techo de cambios")
+
+    box = Sandbox(con_skill=True)
+    try:
+        resultado, _ = _aplicar(box, accion="no_op")
+        check("fue no_op", resultado.get("stage") == "no_op", str(resultado.get("stage")))
+
+        import budget  # noqa: PLC0415
+        despues = budget.status(hermes_home=box.home)
+        check("no se cobro ningun cambio", despues.edits_used == 0,
+              f"edits_used={despues.edits_used}")
+    finally:
+        box.cleanup()
+
+
+def test_staged_does_not_charge_an_edit() -> None:
+    print("\nun cambio ENCOLADO tampoco consume el techo: todavia no ocurrio")
+
+    box = Sandbox(con_skill=True)
+    try:
+        resultado, escrituras = _aplicar(box, staged=True)
+        check("paso por el host", len(escrituras) == 1, str(len(escrituras)))
+        check("pero quedo encolado, no aplicado",
+              resultado.get("applied") is not True, str(resultado)[:120])
+
+        import budget  # noqa: PLC0415
+        despues = budget.status(hermes_home=box.home)
+        check("no se cobro el cambio hasta que ocurra de verdad",
+              despues.edits_used == 0, f"edits_used={despues.edits_used}")
+    finally:
+        box.cleanup()
+
+
 def test_review_no_op_does_not_apply() -> None:
     print("\nno_op no toca nada")
 
@@ -533,8 +639,12 @@ def test_manifest_matches_registration() -> None:
     check("on_session_end está declarado", "on_session_end" in texto)
     check("skills_review está declarado", "skills_review" in texto)
     check("skills_undo está declarado", "skills_undo" in texto)
+    # No se fija un número exacto: eso rompe el test en cada subida legítima y no prueba
+    # nada sobre el comportamiento. Lo que importa es que la versión declarada sea la misma
+    # que la del módulo (test de abajo) y que haya salido del andamio.
+    import __init__  # noqa: F401,PLC0415
     check("la versión subió del andamio",
-          'version: 0.2.0' in texto, "sigue en 0.1.0")
+          f"version: {'0.1.0'}" not in texto, "sigue en 0.1.0 (el andamio)")
 
 
 def main() -> int:
@@ -553,6 +663,10 @@ def main() -> int:
         test_review_refuses_to_bypass_the_gate,
         test_review_respects_staged_response,
         test_review_applies_through_host_and_records,
+        test_apply_charges_the_edit_ceiling,
+        test_edit_ceiling_blocks_the_apply,
+        test_no_op_does_not_charge_an_edit,
+        test_staged_does_not_charge_an_edit,
         test_review_no_op_does_not_apply,
         test_review_rejects_index_out_of_range,
         test_review_missing_skill,

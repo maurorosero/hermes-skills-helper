@@ -211,6 +211,31 @@ def find_entry(entry_id: str, *, hermes_home: Path) -> Optional[JournalEntry]:
     return _state_of(entry_id, read_entries(hermes_home=hermes_home))
 
 
+def applied_entries(
+    *, hermes_home: Path, skill_name: Optional[str] = None
+) -> tuple[JournalEntry, ...]:
+    """TODAS las entradas aplicadas y revertibles, en orden de aplicación.
+
+    ``last_applied`` devuelve una sola, y eso está bien para deshacer: el rollback retrocede
+    de a un paso. Pero **calificar** es otra cosa — la etapa 5 debe pronunciarse sobre
+    *cada* cambio aplicado, y con ``last_applied`` sólo se calificaba el último. Medido:
+    con tres cambios aplicados, dos quedaban sin veredicto para siempre y la respuesta a
+    "¿sirvió?" era "del que me acuerdo".
+
+    Se toma el estado efectivo por ``entry_id``, no la última línea: el journal es
+    append-only y una entrada revertida conserva su línea ``applied`` original.
+    """
+    effective: dict[str, JournalEntry] = {}
+    for entry in read_entries(hermes_home=hermes_home):
+        effective[entry.entry_id] = entry  # la última marca gana
+    return tuple(
+        entry
+        for entry in effective.values()
+        if entry.is_revertible
+        and (skill_name is None or entry.skill_name == skill_name)
+    )
+
+
 def last_applied(*, hermes_home: Path, skill_name: Optional[str] = None) -> Optional[JournalEntry]:
     """Última entrada revertible, opcionalmente filtrando por skill.
 
@@ -635,6 +660,7 @@ __all__ = [
     "last_applied",
     "take_backup",
     "record_before_write",
+    "applied_entries",
     "record_after_write",
     "FAILED",
     "mark_staged",

@@ -110,6 +110,30 @@ Un `SCHEMA.md` que ya existe, un timeout de 60s que no se repite desde hace diez
 tope de memoria que ya no se toca quedaron en el cubo `stale` — con su motivo, no
 borrados.
 
+### Correcciones posteriores, del ciclo fin a fin
+
+**El techo de cambios no se cobraba.** `KIND_EDIT` sólo aparecía en los tests del propio
+`budget`: el límite "≤ 3 cambios/día" estaba escrito en el diseño y nunca se aplicaba.
+Mientras hubiera presupuesto de inferencia se podían aplicar cambios sin tope. Ahora el
+lugar se reserva antes de la primera escritura, y se libera en los tres casos en que el
+cambio no ocurre: la escritura falla, el arnés lo deja en cola, o el arnés lo rechaza.
+
+**La etapa 5 calificaba un solo cambio.** El docstring decía "cada cambio aplicado" y el
+código usaba `last_applied`, que devuelve uno: con tres cambios aplicados, dos quedaban sin
+veredicto de forma permanente. Se agregó `applied_entries` (todas las revertibles, con su
+estado efectivo por `entry_id`) y `grade_applied_changes` ahora recorre esa lista.
+
+**Las muestras del fallo se repetían.** Medido sobre el candidato real: las tres muestras que
+el modelo recibía eran el mismo texto (1 distinta de 3), así que dos tercios del presupuesto
+de evidencia se gastaban en copias y el modelo creía tener tres datos donde había uno. Ahora
+se deduplican antes de recortar, conservando el orden de aparición.
+
+**El modelo proponía a ciegas.** `build_prompt` ahora incluye los intentos previos sobre ese
+skill, leídos del journal: rechazados, fallidos y revertidos. El dato se venía registrando
+desde la etapa 4 y nadie lo leía. Es la pieza que WikiSkill pone en su `skill-impact.md`
+(*"includes full content of rejected proposals — DO NOT repeat rejected approaches"*), y el
+journal ya tenía todo lo necesario para reconstruirla.
+
 ## Etapa 2 — Techo (determinista)
 
 **Pregunta:** ¿queda presupuesto hoy?

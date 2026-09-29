@@ -27,7 +27,9 @@ from proposal import (  # noqa: E402
     ACTION_NO_OP,
     ACTION_PATCH,
     MAX_EVIDENCE_CHARS,
+    MAX_PREVIOUS_ATTEMPTS,
     MAX_PROPOSAL_CHARS,
+    MAX_SAMPLES,
     PROPOSAL_SCHEMA,
     apply_proposal,
     build_prompt,
@@ -370,6 +372,64 @@ def test_no_call_without_budget() -> None:
         box.cleanup()
 
 
+def test_samples_are_deduplicated() -> None:
+    print("\nlas muestras repetidas NO se pagan dos veces")
+
+    f = _failure()
+    iguales = ["mismo error exacto", "mismo error exacto", "mismo error exacto"]
+    bloques = build_prompt(failure=f, skill_name="maps",
+                           skill_content="# maps\n", samples=iguales)
+    texto = bloques[0]["text"]
+    check("el error aparece UNA vez", texto.count("mismo error exacto") == 1,
+          f"aparece {texto.count('mismo error exacto')} veces")
+    check("y no se anuncia una muestra 2 vacía", "Muestra 2" not in texto)
+
+    # Distintas: se conservan todas, hasta el techo.
+    distintas = [f"error variante {i}" for i in range(3)]
+    txt2 = build_prompt(failure=f, skill_name="maps", skill_content="# maps\n",
+                        samples=distintas)[0]["text"]
+    for i in range(3):
+        check(f"la variante {i} se conserva", f"error variante {i}" in txt2)
+
+    # Más distintas que el techo: se recorta, no se deduplica mal.
+    muchas = [f"error {i}" for i in range(10)]
+    txt3 = build_prompt(failure=f, skill_name="maps", skill_content="# maps\n",
+                        samples=muchas)[0]["text"]
+    check("respeta el techo de muestras",
+          sum(1 for i in range(10) if f"error {i}:" in txt3) <= MAX_SAMPLES,
+          f"{sum(1 for i in range(10) if f'error {i}:' in txt3)}")
+
+
+def test_previous_attempts_are_shown_and_bounded() -> None:
+    print("\nlo que ya se intentó y falló se le dice al modelo, con techo")
+
+    f = _failure()
+    intentos = [
+        "un cambio patch ya se intentó y no prosperó (el anclaje no existía)",
+        "un cambio create se aplicó y tuvo que revertirse — empeoró las cosas",
+    ]
+    texto = build_prompt(failure=f, skill_name="maps", skill_content="# maps\n",
+                         previous_attempts=intentos)[0]["text"]
+
+    check("la sección existe", "Ya se intentó" in texto, texto[:200])
+    check("dice que no repita", "No repitas" in texto)
+    check("el primer intento aparece", "el anclaje no existía" in texto)
+    check("y el revertido también", "tuvo que revertirse" in texto)
+
+    # Sin intentos, la sección NO aparece: nada de encabezados vacíos.
+    limpio = build_prompt(failure=f, skill_name="maps",
+                          skill_content="# maps\n")[0]["text"]
+    check("sin historial no hay sección", "Ya se intentó" not in limpio)
+
+    # Techo: muchos intentos se recortan.
+    muchos = [f"intento fallido numero {i}" for i in range(20)]
+    txt3 = build_prompt(failure=f, skill_name="maps", skill_content="# maps\n",
+                        previous_attempts=muchos)[0]["text"]
+    presentes = sum(1 for i in range(20) if f"intento fallido numero {i}" in txt3)
+    check("el historial tiene techo", presentes <= MAX_PREVIOUS_ATTEMPTS,
+          f"{presentes} de 20")
+
+
 def test_failed_call_releases_the_slot() -> None:
     print("\nuna llamada que falló devuelve su lugar")
 
@@ -516,6 +576,8 @@ def main() -> int:
         test_schema_is_self_consistent,
         test_propose_calls_model_once_and_reserves,
         test_no_call_without_budget,
+        test_samples_are_deduplicated,
+        test_previous_attempts_are_shown_and_bounded,
         test_failed_call_releases_the_slot,
         test_no_retry_on_invalid_response,
         test_non_json_response_is_not_interpreted,

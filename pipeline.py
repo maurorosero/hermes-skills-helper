@@ -69,17 +69,24 @@ try:  # cargado como paquete por el arnés
     from .budget import (
         DEFAULT_MAX_EDITS_PER_DAY,
         DEFAULT_MAX_MODEL_RUNS_PER_DAY,
+        KIND_EDIT,
         BudgetStatus,
         ceilings_from_config,
         health as budget_health,
+        release,
+        reserve,
         status as budget_status,
     )
     from .effect import evaluate
     from .effect.usage import read_record as read_usage_record
     from .journal import (
+        FAILED,
+        ROLLED_BACK,
+        applied_entries,
         health as journal_health,
         last_applied,
         mark_staged,
+        read_entries,
         reconcile_staged,
         rollback_last,
         record_after_write,
@@ -93,16 +100,23 @@ except ImportError:  # cargado como módulo suelto (tests, ejecución directa)
     from budget import (  # type: ignore
         DEFAULT_MAX_EDITS_PER_DAY,
         DEFAULT_MAX_MODEL_RUNS_PER_DAY,
+        KIND_EDIT,
         BudgetStatus,
         ceilings_from_config,
         health as budget_health,
+        release,
+        reserve,
         status as budget_status,
     )
     from effect import evaluate  # type: ignore
     from effect.usage import read_record as read_usage_record  # type: ignore
     from journal import (  # type: ignore
+        FAILED,
+        ROLLED_BACK,
+        applied_entries,
         health as journal_health,
         last_applied,
+        read_entries,
         mark_staged,
         reconcile_staged,
         rollback_last,
@@ -375,39 +389,79 @@ def grade_applied_changes(
     """
     marca = time.time() if now is None else now
     resultados = []
-    entrada = last_applied(hermes_home=hermes_home)
-    if entrada is None:
-        return resultados
 
-    edad_dias = (marca - entrada.applied_ts) / 86400.0 if entrada.applied_ts else 0.0
-    if edad_dias < GRACE_DAYS:
-        return resultados
+    # TODAS las aplicadas, no sólo la última. Con ``last_applied`` un cambio quedaba
+    # calificado y los anteriores nunca: la pregunta "¿sirvió?" se respondía sólo para el
+    # más reciente, y los demás quedaban sin veredicto de forma permanente.
+    for entrada in applied_entries(hermes_home=hermes_home):
+        edad_dias = (marca - entrada.applied_ts) / 86400.0 if entrada.applied_ts else 0.0
+        if edad_dias < GRACE_DAYS:
+            continue  # todavía en gracia: preguntar hoy es preguntarle a la nada
 
-    skill_path = _skill_path(skill_name=entrada.skill_name, skills_dirs=skills_dirs)
-    if skill_path is None:
-        return resultados
+        skill_path = _skill_path(skill_name=entrada.skill_name, skills_dirs=skills_dirs)
+        if skill_path is None:
+            continue
 
-    try:
-        metadatos = entrada.metadata or {}
-        veredicto = evaluate(
-            skill_name=entrada.skill_name,
-            skill_path=skill_path,
-            expected_hash=entrada.after_hash or "",
-            applied_ts=entrada.applied_ts,
-            # El fingerprint del fallo que motivó el cambio. Sin él, el tercer chequeo
-            # (¿el error volvió?) no tendría contra qué comparar. Se lee de los metadatos
-            # que la etapa 3 dejó al aplicar.
-            target_fingerprint=metadatos.get("target_fingerprint", ""),
-            fingerprints_after=_fingerprints_after(
-                hermes_home=hermes_home, since=entrada.applied_ts, now=marca),
-            hermes_home=hermes_home,
-            state_db=state_db_path(hermes_home=hermes_home),
-            now=marca,
-        )
-        resultados.append(veredicto)
-    except Exception as exc:
-        logger.warning("No se pudo calificar %s: %s", entrada.skill_name, exc)
+        try:
+            metadatos = entrada.metadata or {}
+            veredicto = evaluate(
+                skill_name=entrada.skill_name,
+                skill_path=skill_path,
+                expected_hash=entrada.after_hash or "",
+                applied_ts=entrada.applied_ts,
+                # El fingerprint del fallo que motivó el cambio. Sin él, el tercer chequeo
+                # (¿el error volvió?) no tendría contra qué comparar. Se lee de los
+                # metadatos que la etapa 3 dejó al aplicar.
+                target_fingerprint=metadatos.get("target_fingerprint", ""),
+                fingerprints_after=_fingerprints_after(
+                    hermes_home=hermes_home, since=entrada.applied_ts, now=marca),
+                hermes_home=hermes_home,
+                state_db=state_db_path(hermes_home=hermes_home),
+                now=marca,
+            )
+            resultados.append(veredicto)
+        except Exception as exc:
+            logger.warning("No se pudo calificar %s: %s", entrada.skill_name, exc)
     return resultados
+
+
+def _previous_attempts(*, hermes_home: Path, skill_name: str) -> tuple[str, ...]:
+    """Lo que ya se intentó sobre este skill y no prosperó, en una línea por intento.
+
+    Se le pasa al modelo para que no repita un enfoque descartado. Medido en WikiSkill: sin
+    este historial el proponente vuelve a proponer lo mismo, y cada reintento cuesta un turno
+    entero de presupuesto para llegar al mismo lado.
+
+    Incluye los dos desenlaces negativos, que son distintos y ambos importan:
+
+    ``rechazada``  el verificador no la aceptó — la propuesta estaba mal formada o no aplicaba.
+    ``failed``     se aplicó o se encoló y **no prosperó** (el arnés la rechazó, se descartó
+                   en la cola, o se revirtió). Esa es la más valiosa: alguien ya intentó ese
+                   cambio concreto y no sirvió.
+
+    Se lee del journal, que ya lo venía registrando sin que nadie lo leyera.
+    """
+    intentos: list[str] = []
+    try:
+        for entrada in read_entries(hermes_home=hermes_home):
+            if entrada.skill_name != skill_name:
+                continue
+            if entrada.status == FAILED:
+                intentos.append(
+                    f"un cambio **{entrada.action}** ya se intentó sobre este skill y no "
+                    f"prosperó ({entrada.reason or 'sin motivo registrado'})"
+                )
+            elif entrada.status == ROLLED_BACK:
+                intentos.append(
+                    f"un cambio **{entrada.action}** se aplicó y tuvo que **revertirse** — "
+                    f"empeoró las cosas ({entrada.reason or 'sin motivo registrado'})"
+                )
+    except Exception as exc:
+        # El historial es una ayuda, no un requisito: si el journal no se puede leer, se
+        # propone sin él en lugar de fallar. Pero se deja rastro.
+        logger.debug("No se pudo leer el historial de intentos: %s", exc)
+        return ()
+    return tuple(intentos)
 
 
 def _fingerprints_after(*, hermes_home: Path, since: float, now: float) -> tuple:
@@ -476,6 +530,8 @@ def review_candidate(
         hermes_home=hermes_home,
         max_edits_per_day=edits_ceiling,
         max_model_runs_per_day=runs_ceiling,
+        previous_attempts=_previous_attempts(
+            hermes_home=hermes_home, skill_name=skill_name),
     )
 
     resultado = {
@@ -526,6 +582,29 @@ def review_candidate(
         )
         return resultado
 
+    # El techo de CAMBIOS se cobra acá, antes de tocar nada: es el límite que de verdad
+    # protege al usuario ("≤ 3 cambios por día"). Cobrar solo la llamada al modelo dejaba
+    # el techo de ediciones como un número escrito y nunca usado — se podían aplicar
+    # cambios sin límite mientras quedara presupuesto de inferencia. Se cobra recién al
+    # aplicar (no al proponer) y NO cuando el arnés deja el cambio en cola: un cambio
+    # encolado todavía no ocurrió, y cobrarlo consumiría el techo por algo que el usuario
+    # puede rechazar.
+    reserva_cambio = reserve(
+        KIND_EDIT,
+        hermes_home=hermes_home,
+        max_edits_per_day=edits_ceiling,
+        max_model_runs_per_day=runs_ceiling,
+        note=f"{prop.action} {skill_name}",
+    )
+    if not reserva_cambio.granted:
+        resultado["stage"] = "sin presupuesto de cambios"
+        resultado["ok"] = False
+        resultado["message"] = (
+            f"no se aplicó el cambio: {reserva_cambio.reason}. La propuesta queda válida "
+            f"y se puede aplicar cuando el techo se libere (mañana, o con un techo mayor)"
+        )
+        return resultado
+
     if prop.action == "patch":
         entrada = record_before_write(
             skill_name=skill_name, skill_path=skill_path, action="patch",
@@ -544,6 +623,10 @@ def review_candidate(
             new_string=prop.replacement if prop.action == "patch" else None,
         )
     except Exception as exc:
+        # La escritura no ocurrió: el lugar se devuelve. Un fallo del host no puede
+        # consumir el techo del día.
+        release(reserva_cambio.token or "", hermes_home=hermes_home,
+                reason=f"escritura falló: {type(exc).__name__}")
         resultado["stage"] = "la escritura falló"
         resultado["ok"] = False
         resultado["message"] = str(exc)
@@ -571,6 +654,10 @@ def review_candidate(
             pending_id=parsed.get("pending_id"),
             hermes_home=hermes_home,
         )
+        # El cambio no ocurrió: el lugar del techo se devuelve. Cobrarlo ahora castigaría
+        # al usuario por una propuesta que todavía puede rechazar.
+        release(reserva_cambio.token or "", hermes_home=hermes_home,
+                reason="encolado: todavía no aplicado")
         resultado["stage"] = "en cola de aprobación del arnés"
         resultado["applied"] = False
         resultado["message"] = parsed.get("message", "queda pendiente de aprobación")
@@ -582,6 +669,8 @@ def review_candidate(
         resultado["applied"] = True
         return resultado
 
+    release(reserva_cambio.token or "", hermes_home=hermes_home,
+            reason="el arnés rechazó la escritura")
     resultado["stage"] = "el arnés rechazó la escritura"
     resultado["ok"] = False
     return resultado
@@ -627,8 +716,6 @@ __all__ = [
     "run_deterministic",
     "review_candidate",
     "grade_applied_changes",
-    "grade_applied_changes",
-    "review_candidate",
     "undo_last",
     "should_scan",
     "read_state",

@@ -96,6 +96,11 @@ MAX_EVIDENCE_CHARS = 12000
 #: completo: veinte repeticiones del mismo error no agregan información sobre la primera.
 MAX_SAMPLES = 3
 
+#: Cuántos intentos previos se le muestran al modelo. El objetivo es que no repita un
+#: enfoque descartado, no darle el historial completo: un prompt que crece con el journal
+#: vuelve la etapa impredecible en costo, que es lo que la etapa 2 controla.
+MAX_PREVIOUS_ATTEMPTS = 5
+
 #: Esquema de la propuesta. Se le pasa al arnés **y** se revalida acá: una salida parseada
 #: por el host sigue siendo salida de un modelo, y la verificación que importa es la que
 #: corre en el código propio.
@@ -220,6 +225,7 @@ def build_prompt(
     skill_name: str,
     skill_content: str,
     samples: Optional[Sequence[str]] = None,
+    previous_attempts: Optional[Sequence[str]] = None,
 ) -> list:
     """Arma los bloques de entrada, con techos de tamaño explícitos.
 
@@ -237,8 +243,22 @@ def build_prompt(
     Se incluye el **skill completo** porque el modelo necesita ver el texto real para
     copiar un ancla literal. Sin eso, cualquier ancla que devuelva sería inventada.
     """
-    muestras = list(samples or [failure.sample])
-    muestras = [m for m in muestras if m][:MAX_SAMPLES]
+    # Deduplicar ANTES de recortar. Medido sobre el candidato real: las tres muestras eran
+    # el mismo texto, así que dos tercios del presupuesto de evidencia se gastaban repitiendo
+    # una línea. Se preserva el orden —la primera aparición es la más representativa— y se
+    # toma hasta MAX_SAMPLES **distintas**: si sólo hay una forma, va una y el resto del
+    # espacio queda libre en lugar de llenarse con copias.
+    crudas = [m for m in (samples or [failure.sample]) if m]
+    vistas: set[str] = set()
+    muestras: list[str] = []
+    for m in crudas:
+        clave = m.strip()
+        if clave in vistas:
+            continue
+        vistas.add(clave)
+        muestras.append(m)
+        if len(muestras) >= MAX_SAMPLES:
+            break
 
     partes = [
         "## Fallo que se repite",
@@ -247,6 +267,19 @@ def build_prompt(
     ]
     for i, m in enumerate(muestras, 1):
         partes.append(f"Muestra {i}: {m}")
+
+    # Lo que ya se intentó y NO funcionó. Sin esto el modelo propone a ciegas y puede
+    # repetir un cambio ya rechazado, gastando otro turno de presupuesto para llegar al
+    # mismo lado. El dato ya estaba en el journal: acá se lee.
+    if previous_attempts:
+        partes.append("")
+        partes.append("## Ya se intentó y NO funcionó")
+        partes.append(
+            "No repitas estos enfoques: ya fueron evaluados y descartados. Si el problema "
+            "de fondo es el mismo, proponé algo distinto —o `no_op` si no corresponde."
+        )
+        for intento in previous_attempts[:MAX_PREVIOUS_ATTEMPTS]:
+            partes.append(f"- {intento}")
 
     partes.append("")
     partes.append("## Skill a revisar")
@@ -404,6 +437,7 @@ def propose(
     max_model_runs_per_day: int = 30,
     samples: Optional[Sequence[str]] = None,
     skill_exists: Optional[bool] = None,
+    previous_attempts: Optional[Sequence[str]] = None,
 ) -> ProposalOutcome:
     """Pide presupuesto, hace **una** llamada al modelo, y verifica la propuesta.
 
@@ -421,7 +455,8 @@ def propose(
         )
 
     prompt = build_prompt(
-        failure=failure, skill_name=skill_name, skill_content=skill_content, samples=samples,
+        failure=failure, skill_name=skill_name, skill_content=skill_content,
+        samples=samples, previous_attempts=previous_attempts,
     )
 
     try:
@@ -536,6 +571,7 @@ __all__ = [
     "MAX_PROPOSAL_CHARS",
     "MAX_EVIDENCE_CHARS",
     "MAX_SAMPLES",
+    "MAX_PREVIOUS_ATTEMPTS",
     "PROPOSAL_SCHEMA",
     "Proposal",
     "ProposalOutcome",

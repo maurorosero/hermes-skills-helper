@@ -1,5 +1,5 @@
 name: hermes-skills-helper
-version: 0.2.0
+version: 0.3.0
 manifest_version: 2
 api_version: 1
 description: "Capa de medición para la auto-mejora de los skills del arnés: encuentra fallos que se repiten entre sesiones, propone UN cambio mínimo en un skill y califica si sirvió. No toca el núcleo de Hermes."
