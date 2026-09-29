@@ -1,8 +1,8 @@
-# hermes-learning-helper
+# hermes-skills-helper
 
-Capa de **medición** para la auto-mejora de un arnés de agente: encuentra fallos que
-se repiten entre sesiones, propone **un** cambio mínimo —en un skill, en memoria o en
-el prompt— y **califica si ese cambio sirvió**.
+Capa de **medición** para la auto-mejora de los **skills** de un arnés de agente:
+encuentra fallos que se repiten entre sesiones, propone **un** cambio mínimo en un
+skill y **califica si ese cambio sirvió**.
 
 El mecanismo no conversa con el usuario ni ejecuta la tarea del turno. Corre al cierre
 de la sesión (`on_session_end`) y trabaja sobre evidencia ya escrita en disco.
@@ -72,7 +72,7 @@ De ahí se siguen tres cosas concretas:
 
 - **Su proyecto sigue siendo suyo.** Vive en su repositorio y lo mantiene él. Nada de
   este trabajo pretende reemplazarlo ni continuarlo.
-- **Nuestro trabajo va contra nuestro repositorio** — `maurorosero/hermes-learning-helper`.
+- **Nuestro trabajo va contra nuestro repositorio** — `maurorosero/hermes-skills-helper`.
   El original no recibe nuestros commits ni nuestros push.
 - **No se copia código de él.** La licencia MIT no impone obligaciones sobre una
   reimplementación independiente; el crédito es una decisión de atribución, no una
@@ -90,7 +90,7 @@ Si este trabajo resulta útil, el mérito del enfoque es de él.
                  ≤ 3 cambios/día · ≤ 30 llamadas/día
 
 3. PROPUESTA     un cambio mínimo, estructurado  MODELO  ← ctx.llm
-                 skill / memoria / prompt + justificación + resultado esperado
+                 el skill afectado + justificación + resultado esperado
 
 4. JOURNAL       registro + rollback             determinista
                  todo cambio es reversible con un comando
@@ -102,6 +102,17 @@ Si este trabajo resulta útil, el mérito del enfoque es de él.
 El detalle de cada etapa, con las APIs del arnés que usa, está en
 [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Alcance
+
+El dominio es **skills**, y solo skills: es el único target cuya señal de uso permite
+calificar si un cambio sirvió.
+
+- **No escribe en `MEMORY.md` ni en `USER.md`.** Solo los lee, para saber cuánto espacio
+  libre queda y no proponer algo que el tope del host vaya a rechazar.
+- **No toca la capa de memoria holográfica.** Es un proyecto aparte.
+- **No tiene un target `prompt`.** El proyecto de origen lo incluía; su señal de uso no
+  existe, así que la etapa 5 no podría calificarlo.
+
 **Principio de diseño:** un solo punto del pipeline usa un modelo. Los otros cuatro son
 comparaciones reproducibles — hashes, conteos y strings—. Poner un modelo donde alcanza
 una comparación cambia una verificación reproducible por una opinión.
@@ -111,8 +122,8 @@ una comparación cambia una verificación reproducible por una opinión.
 Todavía no aplica: no hay código. Cuando lo haya:
 
 ```bash
-hermes plugins install maurorosero/hermes-learning-helper
-hermes plugins enable hermes-learning-helper
+hermes plugins install maurorosero/hermes-skills-helper
+hermes plugins enable hermes-skills-helper
 ```
 
 ## Licencia

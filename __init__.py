@@ -1,4 +1,4 @@
-"""hermes-learning-helper — punto de entrada del plugin.
+"""hermes-skills-helper — punto de entrada del plugin.
 
 Estado: **andamio**. Este repositorio contiene el diseño, no la lógica todavía
 (ver ``docs/DESIGN.md``). El módulo existe para que el plugin se pueda instalar y

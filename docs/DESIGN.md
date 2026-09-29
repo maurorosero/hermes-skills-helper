@@ -1,4 +1,4 @@
-# Diseño — hermes-learning-helper
+# Diseño — hermes-skills-helper
 
 Documento de diseño. **No hay código todavía.** Cada etapa se implementa y se prueba
 por separado antes de pasar a la siguiente.
@@ -77,8 +77,8 @@ esquema:
 
 ```
 action      : patch | create | no_op
-target      : skill | memoria | prompt
-nombre      : del skill o de la memoria afectada
+target      : skill
+nombre      : del skill afectado
 contenido   : el cambio propuesto, mínimo
 justificación
 resultado esperado (cómo se sabrá si sirvió)
@@ -145,9 +145,39 @@ una comparación. Queda fuera del alcance de esta versión, y se declara.
 
 **Criterio de cierre:** los cuatro veredictos se reproducen sobre casos construidos.
 
+## Alcance: skills, y nada más
+
+El dominio de este plugin es **la gestión y adecuación de skills**. No es una decisión
+de nomenclatura, es lo que el diseño puede sostener:
+
+```
+target del esquema        skill          (un solo valor)
+fuente de la evidencia    state.db → messages   (la trayectoria)
+señal de uso (etapa 5)    registro de uso de skills
+
+MEMORY.md                 lectura de capacidad, NO target
+holográfica               fuera de alcance
+prompt                    fuera de alcance
+```
+
+**Por qué el enum no incluye `memoria` ni `prompt`.** La etapa 5 califica cada cambio
+con `count_uses(...)`, y su señal existe **solo para skills**. El proyecto de origen lo
+declara en su propio código: `usage_is_measurable = meta.get("kind", "skill") == "skill"`.
+Un target sin señal de uso escribiría cambios que la etapa 5 no puede evaluar — es
+decir, el revisor sin medición que este proyecto viene a reemplazar.
+
+De ahí que el nombre del repositorio sea `hermes-skills-helper`: describe el dominio
+real, no una aspiración más amplia.
+
+**MEMORY.md se lee, no se escribe.** Aparece únicamente como dato de capacidad —cuánto
+espacio libre queda— para que una propuesta no apunte a algo que el tope del host va a
+rechazar. Es higiene de presupuesto, no dominio: el aprendizaje variable de este
+ecosistema va a la capa holográfica, que es un proyecto aparte.
+
 ## Lo que este plugin NO hace
 
 - **No toca el núcleo de Hermes.** Si una versión futura lo exigiera, se rediseña.
+- **No escribe en MEMORY.md ni en USER.md**, y no toca la capa holográfica.
 - **No aplica cambios sin poder revertirlos.**
 - **No propone sobre un fallo que ocurrió una sola vez.**
 - **No supera el techo diario**, aunque haya evidencia abundante.
