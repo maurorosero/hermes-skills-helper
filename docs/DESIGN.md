@@ -1,7 +1,8 @@
 # Diseño — hermes-skills-helper
 
-Documento de diseño. **No hay código todavía.** Cada etapa se implementa y se prueba
-por separado antes de pasar a la siguiente.
+Documento de diseño. La **etapa 5 ya está implementada y probada**; las demás se
+implementan en el orden fijado abajo, cada una con sus tests antes de pasar a la
+siguiente.
 
 ## Restricción que ordena todo el diseño
 
@@ -144,6 +145,38 @@ causalidad requiere leer las sesiones posteriores — razonamiento sobre trayect
 una comparación. Queda fuera del alcance de esta versión, y se declara.
 
 **Criterio de cierre:** los cuatro veredictos se reproducen sobre casos construidos.
+
+### Estado de la implementación (etapa 5)
+
+Implementada en `effect/`, sin dependencias externas:
+
+```
+effect/fingerprint.py   normalización del error + huella estable
+effect/usage.py         conteo de usos, con su ALCANCE declarado
+effect/checker.py       los tres chequeos, el veredicto y su evidencia
+tests/test_effect.py    49 tests, los cuatro veredictos y los bordes
+tests/medicion_real.py  la etapa 5 contra el registro real del arnés
+```
+
+**Un hallazgo que cambió el diseño.** El arnés **no expone** un "cuántas veces se usó
+desde el momento X": expone un acumulado (`use_count` + `last_used_at`). De ahí una
+asimetría que el módulo respeta en lugar de disimular:
+
+```
+last_used_at <= since_ts   →  0 usos. EXACTO.
+last_used_at >  since_ts   →  hubo ≥ 1. El total NO es derivable del registro.
+```
+
+Para el segundo caso se consulta la trayectoria y el resultado se etiqueta
+`since_approx`. Un conteo aproximado presentado como exacto haría que la etapa 5 decidiera
+sobre un número que no significa lo que aparenta.
+
+**Segunda distinción, la que decide el veredicto:** *no medir* no es *medir cero*. Un
+skill sin entrada en el registro devuelve `unavailable`, nunca `0` — y `unavailable`
+produce `too_new` (una espera), no `unused` (un veredicto). Confundirlas descartaría
+cambios por falta de datos en lugar de por falta de efecto.
+
+Se implementó primero y se probó contra el registro real (172 skills, 114 con uso).
 
 ## Alcance: skills, y nada más
 

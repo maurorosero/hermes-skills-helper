@@ -9,8 +9,9 @@ de la sesión (`on_session_end`) y trabaja sobre evidencia ya escrita en disco.
 
 Es un **plugin de Hermes Agent** — no un skill, no un gancho de shell.
 
-> **Estado: diseño.** Este repositorio contiene el diseño y su justificación. El código
-> se escribe etapa por etapa, con tests, y no existe todavía.
+> **Estado: etapa 5 implementada.** El diseño está completo y la etapa de medición
+> (`¿sirvió?`) ya corre con 49 tests en verde sobre casos construidos y verificación
+> sobre el registro real del arnés. Las etapas 1-4 se escriben en el orden fijado abajo.
 
 ## Por qué desde cero
 
@@ -117,14 +118,37 @@ calificar si un cambio sirvió.
 comparaciones reproducibles — hashes, conteos y strings—. Poner un modelo donde alcanza
 una comparación cambia una verificación reproducible por una opinión.
 
-## Instalación
+## Estado
 
-Todavía no aplica: no hay código. Cuando lo haya:
+```
+5. ¿SIRVIÓ?      implementada   49 tests · verificado contra el registro real
+1. RECURRENCIA   pendiente
+4. JOURNAL       pendiente
+2. TECHO         pendiente
+3. PROPUESTA     pendiente      (la única con modelo)
+```
+
+Se empezó por la medición a propósito: sin poder calificar un cambio, aplicar cambios es
+exactamente el problema que este proyecto viene a resolver.
+
+## Uso
+
+```bash
+python3 tests/test_effect.py        # los 49 tests de la etapa 5
+python3 tests/medicion_real.py      # la etapa 5 contra el registro real del arnés
+```
+
+Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está
+presente.
+
+## Instalación
 
 ```bash
 hermes plugins install maurorosero/hermes-skills-helper
 hermes plugins enable hermes-skills-helper
 ```
+
+Es **opt-in**: sin `--enable`, el plugin no se activa.
 
 ## Licencia
 
