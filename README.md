@@ -63,12 +63,20 @@ El diseño —las cinco etapas, su criterio de verificación y los límites duro
 de **Refine Cycle for Hermes Agent**, de **Taras Boiko** (`Bergschloss`), publicado
 bajo licencia MIT.
 
-- Se **reconocen las ideas y el diseño** como punto de partida de este trabajo.
-- **No se reutiliza su código.** Este repositorio es una implementación propia; la
-  licencia MIT del proyecto original no impone obligaciones sobre una reimplementación
-  independiente, y el crédito aquí es una decisión de atribución, no una exigencia
-  legal.
-- El proyecto original sigue siendo suyo y se mantiene en su repositorio.
+**Este repositorio no es un fork, ni un derivado, ni su sucesor.** Es un proyecto
+independiente: no hay relación de git con el original, no hay upstream que seguir, no
+hay merge pendiente, y no se copia código de él. Se reconoce el **diseño** como punto
+de partida; el código es propio y se escribe aquí.
+
+De ahí se siguen tres cosas concretas:
+
+- **Su proyecto sigue siendo suyo.** Vive en su repositorio y lo mantiene él. Nada de
+  este trabajo pretende reemplazarlo ni continuarlo.
+- **Nuestro trabajo va contra nuestro repositorio** — `maurorosero/hermes-learning-helper`.
+  El original no recibe nuestros commits ni nuestros push.
+- **No se copia código de él.** La licencia MIT no impone obligaciones sobre una
+  reimplementación independiente; el crédito es una decisión de atribución, no una
+  exigencia legal.
 
 Si este trabajo resulta útil, el mérito del enfoque es de él.
 
