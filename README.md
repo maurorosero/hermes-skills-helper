@@ -125,7 +125,10 @@ una comparación cambia una verificación reproducible por una opinión.
 1. RECURRENCIA   implementada   64 tests · 17 → 7 falsos positivos corregidos
 4. JOURNAL       implementada   51 tests · rollback verificado por hash
 2. TECHO         implementada   59 tests · carrera medida y cerrada
-3. PROPUESTA     pendiente      (la única con modelo)
+3. PROPUESTA     implementada   92 tests · verificada con llamadas reales
+
+las cinco etapas están implementadas
+```
 ```
 
 Se empezó por la medición a propósito: sin poder calificar un cambio, aplicar cambios es
@@ -143,6 +146,9 @@ python3 tests/medicion_journal.py       # ciclo completo sobre un skill real del
 python3 tests/test_budget.py            # 59 tests de la etapa 2
 python3 tests/medicion_budget.py        # 12 procesos peleando por el mismo techo
 python3 tests/control_negativo_budget.py # la carrera SIN bloqueo, para saber que el test mide
+python3 tests/test_proposal.py          # 92 tests de la etapa 3 (modelo simulado)
+python3 tests/medicion_proposal.py      # llamada REAL: el camino no_op
+python3 tests/medicion_proposal_patch.py # llamada REAL: el camino patch
 ```
 
 Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está

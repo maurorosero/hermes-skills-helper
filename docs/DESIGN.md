@@ -177,6 +177,67 @@ lo que separa un revisor de un generador de parches.
 **Criterio de cierre:** una propuesta válida contra el esquema, una llamada, y
 verificación de que el techo se respetó.
 
+### Estado de la implementación (etapa 3)
+
+Implementada en `proposal.py`, con `tests/test_proposal.py` (92 tests, modelo simulado),
+`tests/medicion_proposal.py` y `tests/medicion_proposal_patch.py` (**llamadas reales**).
+
+**Los dos caminos, medidos contra el arnés.** Dos corridas reales, un llamado cada una:
+
+```
+no_op     fallo: read_file → /home/andrea/wiki/SCHEMA.md x13   skill: hello-world
+          respuesta: action="no_op"
+          justificación: "El skill hello-world es una prueba mínima del pipeline del
+          hub: no menciona rutas, ni wiki, ni SCHEMA.md, ni indica al agente leer
+          ningún archivo."
+          → el modelo NO inventó un cambio para tener algo que decir
+
+patch     mismo fallo                                        skill: wiki-llm-ingesta
+          respuesta: action="patch", ancla de 115 caracteres
+          "2. Leer `SCHEMA.md` — los **types y tags vigentes**..."
+          ocurrencias literales del ancla en el skill: 1
+          delta: +172 caracteres
+          → propuesta válida, materializable, sin escribir a disco
+```
+
+El segundo caso es el que importa: el modelo copió un ancla **literal** del skill real,
+que aparece exactamente una vez. Es el resultado que la verificación determinista puede
+comprobar — y contra el que un ancla inventada habría sido rechazada.
+
+**Un defecto que solo apareció llamando de verdad.** `build_prompt` devolvía una lista de
+strings. El arnés normaliza cada entrada con `_normalize_input_block`, que acepta un
+`PluginLlmTextInput` o un dict `{"type": "text", "text": ...}` y **levanta
+`ValueError` ante un `str`**: la primera corrida real murió con `Unsupported input block:
+str`. El modelo simulado de los tests no lo detectaba porque aceptaba cualquier cosa. Es
+exactamente el tipo de fallo que la simulación no puede ver: la interfaz real del host.
+
+Se usa el dict plano y no la clase del host, para no acoplar el módulo a internos que
+pueden cambiar sin aviso y para que los tests corran sin el arnés presente.
+
+**La verificación no la hace el modelo.** `validate_proposal` comprueba en código propio:
+
+```
+el ancla existe EXACTAMENTE una vez   0 → el modelo describió el archivo como cree que
+                                      es; >1 → la edición sería arbitraria
+el cambio es mínimo                   un reemplazo sobre el techo de 4000 caracteres no
+                                      es mínimo aunque compile
+create sobre algo que ya existe       se rechaza y se propone la alternativa correcta
+forma del JSON                        propia, sin depender de que el arnés tenga
+                                      `jsonschema` instalado
+```
+
+Pedirle al modelo que verifique su propia salida sería pedirle que se autoevalúe, y un
+examinador que se toma su propio examen no examina nada.
+
+**Una llamada, sin reintentos.** Si el modelo devuelve algo inválido, se reporta. Reintentar
+en silencio sería un techo que no se respeta — y el historial del proyecto (un revisor que
+creaba skills sin control) muestra a dónde lleva eso.
+
+**Presupuesto antes y después.** `propose` reserva **antes** de llamar (si reservara
+después, dos llamadas concurrentes podrían pasarse del techo de costo) y **libera** el
+lugar si la llamada falla. Verificado en la primera corrida: el lugar se liberó y el
+contador volvió a cero.
+
 ## Etapa 4 — Journal y rollback (determinista)
 
 Todo cambio aplicado queda registrado y es **reversible**.
