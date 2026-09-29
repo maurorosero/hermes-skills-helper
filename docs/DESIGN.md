@@ -49,6 +49,42 @@ una sola llamada al modelo.
 **Criterio de cierre:** reproducir la detección sobre trayectoria real y comprobar que
 el umbral descarta el ruido de un solo evento.
 
+### Estado de la implementación (etapa 1)
+
+Implementada en `recurrence.py` + `trajectory.py`, con `tests/test_recurrence.py`
+(64 tests) y `tests/medicion_recurrencia.py` sobre la trayectoria real.
+
+**Dos correcciones que salieron de medir, no de razonar.** La primera versión del filtro
+daba **17 recurrentes** sobre la trayectoria real; solo **7** eran patrones legítimos.
+Las otras dos clases no son fallos del agente y merecían cubos propios:
+
+```
+guardarraíles   el arnés negándose a ejecutar algo (BLOCKED:, Access denied,
+                Refusing to). MEDIDO: 42 % de los fallos de la ventana — 97 de 233.
+                Un guardarraíl funcionando no es un error que el agente deba corregir.
+                Proponer un cambio de conducta por él sería tratar el mecanismo de
+                seguridad como si fuera el problema.
+
+ráfagas         apariciones concentradas en horas. El caso que lo destapó: 37
+                apariciones del mismo rechazo repartidas en 33 sesiones distintas
+                cabían en 2,9 HORAS. Por el criterio de sesiones cruzaba el umbral con
+                holgura (33 ≥ 2); por el de cuenta también (37 ≥ 3). No es recurrencia
+                entre sesiones: es un episodio. De ahí MIN_SPAN_DAYS.
+```
+
+Ambos se reportan en lugar de descartarse en silencio, para que el descarte sea auditable.
+
+**Efecto sobre el resultado real:**
+
+```
+antes   17 "recurrentes"  (7 legítimos + 7 rechazos del arnés + 3 ráfagas)
+ahora    7 recurrentes · 3 ráfagas · 16 rechazos del arnés · 83 eventos únicos
+```
+
+Los 7 candidatos son fallos propios y sostenidos en el tiempo — un `SCHEMA.md` que no
+existe, un timeout de 60s, un error de forma en `tool_call`, un tope de memoria excedido,
+etc. Esos son los que justificarían un cambio de conducta.
+
 ## Etapa 2 — Techo (determinista)
 
 **Pregunta:** ¿queda presupuesto hoy?

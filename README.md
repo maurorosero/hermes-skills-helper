@@ -122,7 +122,7 @@ una comparación cambia una verificación reproducible por una opinión.
 
 ```
 5. ¿SIRVIÓ?      implementada   49 tests · verificado contra el registro real
-1. RECURRENCIA   pendiente
+1. RECURRENCIA   implementada   64 tests · 17 → 7 falsos positivos corregidos
 4. JOURNAL       pendiente
 2. TECHO         pendiente
 3. PROPUESTA     pendiente      (la única con modelo)
@@ -134,8 +134,10 @@ exactamente el problema que este proyecto viene a resolver.
 ## Uso
 
 ```bash
-python3 tests/test_effect.py        # los 49 tests de la etapa 5
-python3 tests/medicion_real.py      # la etapa 5 contra el registro real del arnés
+python3 tests/test_effect.py            # 49 tests de la etapa 5
+python3 tests/medicion_real.py          # etapa 5 contra el registro real
+python3 tests/test_recurrence.py        # 64 tests de la etapa 1
+python3 tests/medicion_recurrencia.py   # etapa 1 contra la trayectoria real
 ```
 
 Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está
