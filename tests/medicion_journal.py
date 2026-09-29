@@ -86,7 +86,8 @@ try:
     print()
     print("--- 2. estado antes de revertir")
     h = health(hermes_home=home)
-    print("  entradas en el journal : %d" % h["entries"])
+    print("  líneas en el journal   : %d  (append-only: pending + applied)" % h["entries"])
+    print("  cambios registrados    : %d" % h["changes"])
     print("  revertibles            : %d" % h["revertible_entries"])
     print("  pendientes (incompletas): %d" % h["pending_entries"])
     print("  el skill difiere del original: %s"
