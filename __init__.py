@@ -215,19 +215,25 @@ def _senales_json(informe: Any, *, limite: int = 20) -> dict:
     return salida
 
 
-def _tool_signals(**kwargs: Any) -> str:
+def _tool_signals(args: Any = None, **kwargs: Any) -> str:
     """Tool ``skills_signals``: qué skills tienen señal, y cuál.
 
     Lee y responde. No propone cambios, no escribe, no llama al modelo. Es la consulta
     directa a lo que el recolector midió.
+
+    Firma ``(args, **kwargs)``: el registry invoca ``entry.handler(args, **kwargs)``
+    (tools/registry.py), así que un handler que sólo declare ``**kwargs`` recibe el dict
+    de argumentos como POSICIONAL y falla con "takes 0 positional arguments but 1 was
+    given". Los argumentos se leen de ``args``.
     """
+    opciones = args if isinstance(args, dict) else kwargs
     try:
         from . import recolector  # noqa: PLC0415
 
         home = _hermes_home()
         informe = recolector.recolectar(
-            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(kwargs.get("force")))
-        return json.dumps(_senales_json(informe, limite=int(kwargs.get("limit") or 20)),
+            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(opciones.get("force")))
+        return json.dumps(_senales_json(informe, limite=int(opciones.get("limit") or 20)),
                           ensure_ascii=False, default=str)
     except Exception as exc:
         logger.warning("hermes-skills-helper: %s falló: %s", TOOL_SIGNALS, exc)
@@ -235,20 +241,23 @@ def _tool_signals(**kwargs: Any) -> str:
             {"ok": False, "message": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
 
 
-def _tool_report(**kwargs: Any) -> str:
+def _tool_report(args: Any = None, **kwargs: Any) -> str:
     """Tool ``skills_report``: el informe completo, listo para abrir un issue.
 
     Devuelve el mismo dato que ``skills_signals`` más un bloque de texto pensado para
     pegarse en un issue del repo de skills. El plugin redacta; el issue lo abre quien
     corresponda.
+
+    Firma ``(args, **kwargs)`` por la misma razón que ``_tool_signals``.
     """
+    opciones = args if isinstance(args, dict) else kwargs
     try:
         from . import recolector  # noqa: PLC0415
 
         home = _hermes_home()
         informe = recolector.recolectar(
-            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(kwargs.get("force")))
-        salida = _senales_json(informe, limite=int(kwargs.get("limit") or 20))
+            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(opciones.get("force")))
+        salida = _senales_json(informe, limite=int(opciones.get("limit") or 20))
         salida["markdown"] = _markdown_issue(informe)
         salida["nota"] = (
             "El plugin no abre el issue: lo redacta. Abrirlo en rosero-skills es del paso "

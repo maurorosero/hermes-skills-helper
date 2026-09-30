@@ -190,6 +190,36 @@ def test_el_tool_report_devuelve_markdown_y_nota() -> None:
     check("todo junto serializa", isinstance(json.dumps(salida, default=str), str))
 
 
+# -- La FIRMA del handler: el bug que dejó los tools muertos --------------------------
+
+def test_los_handlers_aceptan_el_args_posicional() -> None:
+    """El registry llama ``entry.handler(args, **kwargs)`` — args POSICIONAL.
+
+    Un handler declarado ``def f(**kwargs)`` recibe ese dict como posicional y muere con
+    "takes 0 positional arguments but 1 was given": los dos tools del plugin quedaron
+    rotos en producción sin que ningún test lo notara, porque los tests llamaban a las
+    funciones internas (``_senales_json``, ``_markdown_issue``), nunca al handler que el
+    arnés invoca. Este test llama al handler como lo llama el core.
+    """
+    import inspect
+
+    for nombre, handler in (("skills_signals", plugin._tool_signals),
+                            ("skills_report", plugin._tool_report)):
+        params = inspect.signature(handler).parameters
+        posicionales = [p for p in params.values()
+                        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        check(f"{nombre} acepta al menos un posicional", len(posicionales) >= 1,
+              f"params={list(params)}")
+        # La llamada literal del registry: args como posicional, más kwargs opcionales.
+        try:
+            handler({}, force=False, limit=3)
+            ok = True
+        except TypeError as exc:
+            ok = False
+            detalle = str(exc)
+        check(f"{nombre} no revienta con la firma del registry", ok,
+              locals().get("detalle", ""))
+
 def main() -> int:
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for prueba in pruebas:
