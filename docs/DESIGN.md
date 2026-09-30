@@ -289,11 +289,34 @@ proteger con un techo, nada que registrar con un journal, y la etapa de efecto �
 calificaba los cambios que el propio plugin aplicaba— no tenía objeto.
 
 ```
-2.530 líneas de código y 2.000 de tests. Recuperables de la rama pre-recorte-0.3.0.
+se van    2.530 líneas     budget 549 · journal 672 · pipeline 726 · proposal 583
+          ~2.000 en tests  los cuatro archivos que las probaban
+llegan      770 líneas     uso 392 · recolector 300 · __init__ +78
+quedan    2.630 de 4.390   (60% del original) · neto −1.760
 ```
 
-Lo que queda es la parte que ninguno de los dos sistemas existentes tiene: medir el uso real
-y decirlo.
+Lo que queda es la parte que ninguno de los dos sistemas existentes tiene: medir el uso
+real y decirlo.
+
+```
+señal de uso     uso.py                        ← nuevo
+el barrido       recolector.py                 ← nuevo: throttle + estado atómico
+recurrencia      recurrence.py + trajectory.py
+verificación     effect/                       ← fingerprint + tres chequeos
+```
+
+Del recorte se rescatan **dos piezas, y sólo dos**, porque ambas protegen *lectura y estado
+propio* y no escritura sobre skills:
+
+```
+should_scan          el throttle, con su razón en ambos sentidos
+read_state/write_state   el estado atómico: temporal + os.replace
+```
+
+El lock de `budget.py` **no** se rescata: protegía la escritura concurrente del libro de
+presupuesto, y sin ese libro no hay nada que proteger.
+
+El código previo queda en la rama `pre-recorte-0.3.0`.
 
 ---
 

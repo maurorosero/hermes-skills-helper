@@ -178,32 +178,34 @@ no hay nada que proteger con un techo, nada que registrar con un journal, y la e
 efecto —que sólo calificaba los cambios que el propio plugin aplicaba— no tenía objeto.
 
 ```
-ETAPA 2  TECHO         fuera — escribía        ≤3 cambios/día · ≤30 llamadas/día
-ETAPA 3  PROPUESTA     fuera — escribía        la única con modelo
-ETAPA 4  JOURNAL       fuera — escribía        registro + rollback por hash
-         PIPELINE      fuera — orquestaba      las cinco etapas
+se van   2.530 líneas    budget 549 · journal 672 · pipeline 726 · proposal 583
+         ~2.000 en tests  los cuatro archivos que las probaban
+llegan     770 líneas    uso 392 · recolector 300 · __init__ +78
+quedan   2.630 de 4.390  (60% del original)
 ```
+
+El neto es −1.760 líneas: se va más de lo que llega, porque lo que llega **mide en vez de
+escribir** y medir ocupa menos que escribir.
 
 Lo que queda es la parte que ninguno de los dos sistemas existentes tiene: medir el uso
 real y decirlo.
 
 ```
-señal de uso       uso.py                    ← nuevo
+señal de uso       uso.py                      ← nuevo
+el barrido         recolector.py                ← nuevo: throttle + estado atómico
 recurrencia        recurrence.py + trajectory.py
-verificación       effect/                    ← fingerprint + tres chequeos
-el barrido         recolector.py              ← throttle + estado atómico
+verificación       effect/                     ← fingerprint + tres chequeos
 ```
 
-Del recorte se rescataron dos piezas ya probadas: el **throttle** (`should_scan`), con su
-razón en ambos sentidos —"no se barrió" tiene que poder distinguirse de "se barrió y no
-había nada"— y el **estado atómico** (`read_state`/`write_state`), escritura a temporal más
-`os.replace`.
+Del recorte se rescatan dos piezas ya probadas, y sólo dos: el **throttle** (`should_scan`),
+con su razón en ambos sentidos —"no se barrió" tiene que poder distinguirse de "se barrió y
+no había nada"— y el **estado atómico** (`read_state`/`write_state`), escritura a temporal
+más `os.replace`.
 
-El lock de `budget.py` y la escritura append-only de `journal.py` **no** se rescatan:
-protegían la escritura concurrente del libro de presupuesto y del journal de cambios. Sin
-esa escritura no hay nada que proteger.
+El lock de `budget.py` **no** se rescata: protegía la escritura concurrente del libro de
+presupuesto. Sin ese libro no hay nada que proteger.
 
-Detalle en [`docs/DESIGN.md`](docs/DESIGN.md).
+El código previo queda en la rama `pre-recorte-0.3.0`.
 
 ## Uso
 
