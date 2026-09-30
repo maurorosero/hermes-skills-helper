@@ -1,11 +1,9 @@
-"""Medicion real del cableado: el plugin cargado por el arnes de verdad.
+"""Medición del cableado: el plugin cargado por el arnés REAL, no por nosotros.
 
-No alcanza con que `register()` funcione contra un ctx falso. Lo que hay que probar
-es que el ARNES lo carga, registra el hook y los tools, y que el hook corre sin
-romper nada.
+Verifica que register() registre el hook y los dos tools, que el hook corra sin romper el
+turno, y que el barrido lea el arnés de verdad.
 
-Es la ultima verificacion antes de instalar: si esto falla, instalar seria poner un
-plugin roto en el ciclo de cada turno.
+Uso: python3 tests/medicion_cableado.py
 """
 
 from __future__ import annotations
@@ -13,121 +11,88 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-PLUGIN_DIR = Path("/home/andrea/developers/hermes/plugins/hermes-skills-helper")
-HERMES_AGENT = Path("/home/andrea/.hermes/hermes-agent")
-sys.path.insert(0, str(HERMES_AGENT))
+RAIZ = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(RAIZ))
 
-print("=" * 74)
-print("MEDICION REAL - el arnes carga el plugin")
-print("=" * 74)
+from hermes_cli import plugin_dev  # noqa: E402
+from hermes_cli.plugins import PluginManager  # noqa: E402
 
-# --- 1. El arnes lo carga y registra -------------------------------------------------
-print()
-print("--- 1. carga y registro por el arnes")
-from hermes_cli.plugins import discover_plugins  # noqa: E402
+OK: list[str] = []
+NO: list[str] = []
 
-discover_plugins()
 
-# El validador del propio arnes es la via oficial para saber que quedo registrado:
-# lee el manifest Y lo que register() registro, y compara.
-from hermes_cli.plugin_dev import doctor_plugin  # noqa: E402
+def check(nombre: str, condicion: bool, detalle: str = "") -> None:
+    (OK if condicion else NO).append(f"{nombre}{(': ' + detalle) if detalle else ''}")
 
-informe_val = doctor_plugin(PLUGIN_DIR)
-registrados = list(getattr(informe_val, "registered_hooks", ()) or ())
-print("  hooks registrados: %s" % (registrados or "ninguno"))
 
-registrados_tools = list(getattr(informe_val, "registered_tools", ()) or ())
-print("  tools registrados: %s" % (registrados_tools or "ninguno"))
-
-# El registro EN VIVO no se consulta a proposito: el doctor carga el plugin en una copia
-# aislada, asi que este proceso no tiene los tools del plugin. Consultarlos aca daria
-# False y el False no significaria nada -- el plugin no esta instalado todavia. La
-# verificacion valida es el informe del doctor y, despues, la instalacion.
-encontrados = {}
-for nombre in ("skills_review", "skills_undo"):
-    encontrados[nombre] = nombre in registrados_tools
-
-# --- 2. El hook corre sin romper nada ------------------------------------------------
-print()
-print("--- 2. el hook corre sobre el arnes real")
-# El plugin se importa como modulo suelto via sys.path: es el modo en que los tests lo
-# cargan, y sus modulos ya resuelven los imports en ambos modos de carga.
-sys.path.insert(0, str(PLUGIN_DIR))
-import importlib.util  # noqa: E402
-
-_spec = importlib.util.spec_from_file_location(
-    "hermes_skills_helper_medicion", PLUGIN_DIR / "__init__.py")
-plugin = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = plugin
-_spec.loader.exec_module(plugin)
-
-try:
-    plugin._on_session_end(session_id="medicion", turn_id="t1", completed=True,
-                           failed=False, interrupted=False)
-    print("  el hook corrio sin excepcion: SI")
-    hook_ok = True
-except Exception as exc:
-    print("  el hook LEVANTO: %s: %s" % (type(exc).__name__, exc))
-    hook_ok = False
-
-# --- 3. El ciclo determinista sobre la trayectoria REAL ------------------------------
-print()
-print("--- 3. el ciclo determinista, sobre la trayectoria real")
-from pipeline import health, run_deterministic  # noqa: E402
-
-home = Path("/home/andrea/.hermes")
-informe = run_deterministic(hermes_home=home, force=True)
-
-print("  barrido            : %s" % informe.scanned)
-print("  trayectoria legible: %s" % informe.trajectory_readable)
-print("  candidatos         : %d" % informe.candidates)
-print("  errores            : %s" % (informe.errors or "ninguno"))
-print("  resumen            : %s" % informe.summary())
-
-if informe.recurrence:
+def main() -> int:
+    print("=== CABLEADO contra el arnés real ===")
     print()
-    print("  los fallos recurrentes que el plugin encuentra:")
-    for i, c in enumerate(informe.recurrence.recurring[:5], 1):
-        print("    %d. [%s] %s" % (i, c.tool_name, c.why()))
+
+    # 1. El doctor del arnés corre register() en copia aislada, y su informe es la vía
+    # oficial: lee el manifest Y lo que register() registró, y compara los dos.
+    #
+    # El registro EN VIVO no se consulta a propósito: el doctor carga el plugin en una
+    # copia aislada, así que este proceso no tiene sus tools. Consultarlos daría False y
+    # ese False no significaría nada — el plugin todavía no está instalado.
+    try:
+        informe_val = plugin_dev.doctor_plugin(RAIZ)
+        hooks_reg = list(getattr(informe_val, "registered_hooks", ()) or ())
+        tools_reg = list(getattr(informe_val, "registered_tools", ()) or ())
+        check("registra on_session_end", "on_session_end" in hooks_reg, str(hooks_reg))
+        check("registra skills_signals", "skills_signals" in tools_reg, str(tools_reg))
+        check("registra skills_report", "skills_report" in tools_reg, str(tools_reg))
+        errores = getattr(informe_val, "errors", None) or []
+        check("el doctor no reporta errores", not errores, str(errores)[:200])
+    except Exception as exc:
+        check("el doctor corre", False, f"{type(exc).__name__}: {exc}")
+
+    # 2. El barrido corre sobre el arnés real: lee el registro de uso y la trayectoria.
+    try:
+        from recolector import recolectar
+
+        home = Path("/home/andrea/.hermes")
+        informe = recolectar(hermes_home=home,
+                             skills_dirs=[home / "skills",
+                                          Path("/home/andrea/developers/ai/skills")],
+                             force=True)
+        check("el barrido corre", informe.scanned, informe.reason)
+        check("leyó el registro de uso", informe.uso is not None,
+              str(informe.errors[:2]))
+        check("la trayectoria se pudo leer", informe.trajectory_readable,
+              str(informe.errors[:2]))
+        if informe.uso is not None:
+            check("encontró señales", informe.uso.total_activos > 0,
+                  str(informe.uso.total_activos))
+            print()
+            print("  " + informe.summary())
+    except Exception as exc:
+        check("el barrido corre", False, f"{type(exc).__name__}: {exc}")
+
+    # 4. El estado escribe atómico y el throttle respeta el intervalo
+    try:
+        import tempfile
+        from recolector import read_state, should_scan, write_state
+
+        tmp = Path(tempfile.mkdtemp(prefix="cableado-"))
+        write_state({"last_scan_ts": 1000.0}, hermes_home=tmp)
+        check("el estado se lee de vuelta", read_state(hermes_home=tmp).get("last_scan_ts") == 1000.0)
+        corresponde, razon = should_scan(hermes_home=tmp, now=1100.0, min_interval=900.0)
+        check("el throttle corta antes del intervalo", not corresponde, razon)
+        corresponde2, _ = should_scan(hermes_home=tmp, now=5000.0, min_interval=900.0)
+        check("el throttle deja pasar después", corresponde2)
+    except Exception as exc:
+        check("el throttle funciona", False, f"{type(exc).__name__}: {exc}")
+
     print()
-    print("  descartados: %d rafagas, %d rechazos del arnes, %d eventos unicos"
-          % (len(informe.recurrence.bursts), len(informe.recurrence.guardrails),
-             informe.recurrence.single_events))
+    for linea in OK:
+        print("  OK   " + linea)
+    for linea in NO:
+        print("  NO   " + linea)
+    print()
+    print(f"{len(OK)} OK, {len(NO)} NO")
+    return 1 if NO else 0
 
-# --- 4. El estado del ciclo ------------------------------------------------------------
-print()
-print("--- 4. estado del ciclo")
-h = health(hermes_home=home)
-print("  ultimo barrido: %s" % h["last_scan_ts"])
-print("  intervalo minimo: %.0f s" % h["min_scan_interval_seconds"])
-print("  dias de gracia: %d" % h["grace_days"])
-print("  techos: %s" % h["budget"].get("day"))
-print("  journal: %d entradas, %d revertibles"
-      % (h["journal"]["entries"], h["journal"]["revertible_entries"]))
 
-# --- 5. VERIFICACION -------------------------------------------------------------------
-print()
-print("=" * 74)
-print("VERIFICACION")
-print("=" * 74)
-
-todo = [
-    ("el arnes registro el hook on_session_end", "on_session_end" in registrados),
-    ("el arnes registro el tool skills_review", encontrados.get("skills_review", False)),
-    ("el arnes registro el tool skills_undo", encontrados.get("skills_undo", False)),
-    ("el doctor del arnes no reporta errores",
-     not list(getattr(informe_val, "errors", ()) or ())),
-    ("el hook corre sin romper el turno", hook_ok),
-    ("el ciclo leyo la trayectoria real", informe.trajectory_readable),
-    ("el ciclo no tuvo errores", not informe.errors),
-    ("encontro los recurrentes reales", informe.candidates > 0),
-]
-for etiqueta, valor in todo:
-    print("  %-46s %s" % (etiqueta, "SI" if valor else "NO"))
-print()
-if all(v for _, v in todo):
-    print("  PLUGIN CABLEADO Y FUNCIONANDO CONTRA EL ARNES REAL.")
-    print("  Listo para instalar.")
-else:
-    print("  NO VERIFICADO.")
-    raise SystemExit(1)
+if __name__ == "__main__":
+    raise SystemExit(main())

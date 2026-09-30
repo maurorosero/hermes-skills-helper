@@ -1,51 +1,69 @@
-"""hermes-skills-helper — punto de entrada del plugin.
+"""hermes-skills-helper — recolector de señales para la mejora de skills.
 
-Capa de medición para la auto-mejora de los skills del arnés: encuentra fallos que se
-repiten entre sesiones, propone UN cambio mínimo en un skill y califica si sirvió.
+**Qué es esto, en una frase:** el plugin **reúne los datos** que hacen falta para decidir
+si un skill hay que crearlo, mejorarlo o darlo de baja. No lo decide, no lo escribe, y no
+llama al modelo.
 
-Las cinco etapas
-----------------
+El flujo completo
+-----------------
 ```
-5. ¿SIRVIÓ?      effect/        tres chequeos deterministas + veredicto
-1. RECURRENCIA   recurrence.py + trajectory.py
-4. JOURNAL       journal.py     registro append-only + rollback verificado
-2. TECHO         budget.py      techos diarios, con la carrera cerrada
-3. PROPUESTA     proposal.py    la única con modelo
-```
-
-``pipeline.py`` las orquesta. Todo está implementado y verificado contra el arnés real.
-
-Qué registra el plugin, y qué no
---------------------------------
-```
-on_session_end    SÍ   el ciclo DETERMINISTA: etapas 1, 2 y 5. Nunca llama al modelo.
-skills_review     SÍ   el tool que propone. Es el único camino que gasta presupuesto.
-skills_undo       SÍ   el tool que revierte el último cambio aplicado (etapa 4).
+recolector (acá)      mide y recomienda               cero escritura, cero modelo
+   ↓
+cron                  cruza con el historial git      determinista
+   ↓
+issue en el repo      la propuesta, con motivo y evidencia
+   ↓
+revisión externa      humano autorizador, en sandbox
+   ↓
+promoción             repo → ~/.hermes/skills         explícita, reversible
 ```
 
-**Sin hook de propuesta.** Verificado en el arnés: ``on_session_end`` corre *por turno*,
-no por sesión — está documentado en ``agent/turn_finalizer.py`` (*"run_conversation() runs
-once per message"*). Un gancho por turno que llamara al modelo gastaría el techo de costo
-en la primera hora de conversación. El hook corre sólo lo determinista, y con un intervalo
-mínimo entre barridos: el barrido completo tarda ~0,30 s medidos — no es caro, pero
-tampoco gratis a cada mensaje.
+El plugin es la primera pieza y sólo la primera. Lo demás vive fuera: en el repo, en git
+y en quien revisa.
 
-Por qué la aplicación pasa por el arnés y no por escritura directa
------------------------------------------------------------------
-Verificado en ejecución que el arnés **ya tiene** el gate de aprobación encendido
-(``skills.write_approval: true``): ``skill_manage(action='create', ...)`` devuelve
-``{"success": true, "staged": true, "pending_id": ...}`` y el archivo **no se modifica** —
-queda en cola para que Mauro lo revise.
+Por qué no escribe
+------------------
+Escribir sobre skills con verificación pobre es lo que degradó el catálogo. Medido el
+29-sep-2026 en el arnés de Mauro:
 
-Es exactamente el mecanismo que este proyecto iba a construir, ya en uso. Escribir directo
-para "no depender del host" se saltaría la aprobación de Mauro, que es la parte que no se
-negocia. Por eso, si la vía del arnés no está disponible, el plugin falla y lo dice.
+```
+andrea-governance     189 parches    100,3 KB    patch_generation = 1
+41 skills parcheados  1.242 parches  0 verificaciones de que mejoraran
+```
+
+189 escrituras contadas como **una sola generación**. Un cambio malo no se puede aislar ni
+revertir, porque no se sabe cuál fue.
+
+Y hay una razón de costo: cada cambio propuesto se encolaba para aprobación. La cola llegó
+a **224 pendientes / 416 operaciones**, el 79% concentrado en cuatro skills, sin registrar
+el motivo de ninguna. Un proceso que genera trabajo de revisión sin criterio no ahorra
+trabajo: lo multiplica.
+
+Qué expone
+----------
+```
+on_session_end    el barrido determinista, con throttle de 900 s
+skills_signals    responde: qué skills tienen señal y cuál. Sólo lee.
+skills_report     el informe completo, con un cuerpo Markdown para abrir un issue
+```
+
+Ninguno escribe, ninguno propone un cambio de texto, ninguno llama al modelo.
+
+Qué reemplaza
+-------------
+```
+curador del arnés   mantiene el catálogo; archiva por reloj (62 en una corrida, 4
+                    volvieron esa misma semana) y no mide si algo mejoró
+Refine Cycle        busca errores repetidos; mide el efecto como "el archivo creció"
+```
+
+Los dos escriben y ninguno cierra el ciclo. Este recolector no escribe — y por eso puede
+medir.
 
 Restricción de diseño
 ---------------------
-El núcleo de Hermes **no se toca**. Todo usa APIs que el arnés ya expone
-(``on_session_end``, ``ctx.llm.complete_structured``, ``ctx.register_tool``). El gate de
-aprobación también es del host: el plugin lo usa, no lo reimplementa.
+El núcleo de Hermes **no se toca**. Todo usa APIs que el arnés ya expone: ``on_session_end``,
+``ctx.register_tool`` y la lectura del ``.usage.json`` que el propio arnés mantiene.
 """
 
 from __future__ import annotations
@@ -56,13 +74,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 logger = logging.getLogger(__name__)
 
-#: Nombres de los tools que el plugin expone.
-TOOL_REVIEW = "skills_review"
-TOOL_UNDO = "skills_undo"
+#: Tools que el plugin expone. Los dos leen; ninguno escribe.
+TOOL_SIGNALS = "skills_signals"
+TOOL_REPORT = "skills_report"
 
 HOOK_SESSION_END = "on_session_end"
 
@@ -89,9 +107,13 @@ def _hermes_home() -> Path:
 def _skills_dirs(hermes_home: Path) -> list[Path]:
     """Directorios donde buscar skills: los externos configurados, más el por defecto.
 
-    El hub de Mauro vive fuera de ``~/.hermes/skills``. Buscar sólo en la ruta por defecto
-    no encontraría el SKILL.md de la mayoría de los skills, y el fallo sería silencioso:
-    el plugin diría "no se encontró el skill" para skills que existen.
+    El hub vive fuera de ``~/.hermes/skills``. Buscar sólo en la ruta por defecto no
+    encontraría el SKILL.md de la mayoría de los skills, y el fallo sería silencioso: el
+    plugin reportaría "no se encontró" para skills que existen.
+
+    El orden importa: el arnés resuelve **local primero** (``agent/skill_utils.py:420``,
+    docstring *"local ... first"*), así que la ruta por defecto va al final para que el
+    tamaño medido sea el del archivo que realmente se carga.
     """
     dirs: list[Path] = []
     try:
@@ -115,166 +137,216 @@ def _skills_dirs(hermes_home: Path) -> list[Path]:
 
 
 def _on_session_end(**kwargs: Any) -> None:
-    """Hook del ciclo determinista. **Nunca llama al modelo.**
+    """Hook del barrido determinista. **Nunca llama al modelo y no escribe en skills.**
 
     Un hook no debe romper el turno. Toda excepción se registra y se traga: fallar acá no
     puede costarle a Mauro su respuesta.
     """
     try:
-        from . import pipeline  # noqa: PLC0415
+        from . import recolector  # noqa: PLC0415
 
         home = _hermes_home()
-        informe = pipeline.run_deterministic(
-            hermes_home=home, skills_dirs=_skills_dirs(home))
+        informe = recolector.recolectar(hermes_home=home, skills_dirs=_skills_dirs(home))
         if informe.scanned:
             logger.info("hermes-skills-helper: %s", informe.summary())
-            if informe.candidates:
-                # Un aviso, no una acción: el plugin no propone solo.
-                logger.info(
-                    "hermes-skills-helper: %d fallo(s) recurrente(s) listos para revisar "
-                    "con el tool %s", informe.candidates, TOOL_REVIEW,
-                )
         else:
             logger.debug("hermes-skills-helper: %s", informe.summary())
     except Exception as exc:
-        logger.warning("hermes-skills-helper: el ciclo determinista falló: %s", exc)
+        logger.warning("hermes-skills-helper: el barrido falló: %s", exc)
 
 
-def _skills_manage():
-    """La vía del arnés para escribir skills, con su gate de aprobación.
+def _senales_json(informe: Any, *, limite: int = 20) -> dict:
+    """Las señales del barrido en forma serializable, para los dos tools."""
+    salida: dict[str, Any] = {
+        "ok": True,
+        "scanned": informe.scanned,
+        "reason": informe.reason,
+        "summary": informe.summary(),
+    }
+    if informe.limitation:
+        salida["limitation"] = informe.limitation
+    if informe.errors:
+        salida["errors"] = informe.errors
 
-    Se importa perezosamente y se devuelve ``None`` si no está: el llamador lo trata como
-    "no hay vía" y falla en lugar de escribir por atajo.
+    if informe.uso is not None:
+        r = informe.uso
+        salida["uso"] = {
+            "activos": r.total_activos,
+            "sin_registro": r.sin_registro,
+            "confiable": r.trustworthy,
+            "sin_usar": [{"nombre": s.nombre, "motivo": s.motivo}
+                         for s in r.sin_usar[:limite]],
+            "sin_cambio": [{"nombre": s.nombre, "usos": s.use_count, "motivo": s.motivo}
+                           for s in r.sin_cambio[:limite]],
+            "sin_reuso": [{"nombre": s.nombre, "parches": s.patch_count, "motivo": s.motivo}
+                          for s in r.sin_reuso[:limite]],
+            "hinchados": [{"nombre": s.nombre, "parches": s.patch_count,
+                           "bytes": s.tamano_bytes, "motivo": s.motivo}
+                          for s in r.hinchado[:limite]],
+            "conteos": {
+                "sin_usar": len(r.sin_usar),
+                "sin_cambio": len(r.sin_cambio),
+                "sin_reuso": len(r.sin_reuso),
+                "hinchados": len(r.hinchado),
+            },
+        }
+    if informe.recurrence is not None:
+        rec = informe.recurrence
+        salida["recurrencia"] = {
+            "recurrentes": len(rec.recurring),
+            "rafagas": len(rec.bursts),
+            "guardarrailes": len(rec.guardrails),
+            "caducos": len(rec.stale),
+            "confiable": rec.trustworthy,
+            "detalle": [c.why() for c in rec.recurring[:limite]],
+        }
+    return salida
+
+
+def _tool_signals(**kwargs: Any) -> str:
+    """Tool ``skills_signals``: qué skills tienen señal, y cuál.
+
+    Lee y responde. No propone cambios, no escribe, no llama al modelo. Es la consulta
+    directa a lo que el recolector midió.
     """
     try:
-        from tools.skill_manager_tool import skill_manage  # noqa: PLC0415
-
-        return skill_manage
-    except Exception as exc:
-        logger.warning("No se pudo importar la vía de escritura del arnés: %s", exc)
-        return None
-
-
-def _tool_review(**kwargs: Any) -> str:
-    """Tool ``skills_review``: propone (y opcionalmente aplica) UN cambio mínimo.
-
-    Es el único camino que gasta presupuesto de inferencia. Sin ``apply``, propone y se
-    detiene — modo por defecto, porque un revisor que aplica solo es exactamente el
-    revisor que este proyecto vino a reemplazar.
-    """
-    try:
-        from . import pipeline  # noqa: PLC0415
+        from . import recolector  # noqa: PLC0415
 
         home = _hermes_home()
-        dirs = _skills_dirs(home)
-
-        informe = pipeline.run_deterministic(
-            hermes_home=home, skills_dirs=dirs, force=True)
-        if not informe.recurrence or not informe.recurrence.recurring:
-            return json.dumps(
-                {"ok": True, "stage": "sin candidatos",
-                 "message": "no hay fallos recurrentes sostenidos que justifiquen un cambio",
-                 "summary": informe.summary()},
-                ensure_ascii=False,
-            )
-
-        candidatos = informe.recurrence.recurring
-        try:
-            indice = int(kwargs.get("index", 0) or 0)
-        except (TypeError, ValueError):
-            indice = 0
-        if indice < 0 or indice >= len(candidatos):
-            return json.dumps(
-                {"ok": False, "stage": "índice fuera de rango",
-                 "message": f"hay {len(candidatos)} candidato(s); el índice {indice} no existe",
-                 "available": [c.why() for c in candidatos[:10]]},
-                ensure_ascii=False,
-            )
-        candidato = candidatos[indice]
-        skill_name = str(kwargs.get("skill") or candidato.tool_name)
-
-        from agent.plugin_llm import PluginLlm  # noqa: PLC0415
-
-        llm = PluginLlm(plugin_id="hermes-skills-helper")
-        resultado = pipeline.review_candidate(
-            failure=candidato,
-            skill_name=skill_name,
-            llm=llm,
-            hermes_home=home,
-            skills_dirs=dirs,
-            apply=bool(kwargs.get("apply")),
-            skills_manage=_skills_manage(),
-        )
-        resultado["candidate"] = candidato.why()
-        return json.dumps(resultado, ensure_ascii=False, default=str)
+        informe = recolector.recolectar(
+            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(kwargs.get("force")))
+        return json.dumps(_senales_json(informe, limite=int(kwargs.get("limit") or 20)),
+                          ensure_ascii=False, default=str)
     except Exception as exc:
-        logger.warning("hermes-skills-helper: %s falló: %s", TOOL_REVIEW, exc)
-        return json.dumps(
-            {"ok": False, "stage": "error", "message": f"{type(exc).__name__}: {exc}"},
-            ensure_ascii=False,
-        )
-
-
-def _tool_undo(**kwargs: Any) -> str:
-    """Tool ``skills_undo``: revierte el último cambio aplicado (etapa 4)."""
-    try:
-        from . import pipeline  # noqa: PLC0415
-
-        resultado = pipeline.undo_last(hermes_home=_hermes_home())
-        return json.dumps(resultado, ensure_ascii=False, default=str)
-    except Exception as exc:
-        logger.warning("hermes-skills-helper: %s falló: %s", TOOL_UNDO, exc)
+        logger.warning("hermes-skills-helper: %s falló: %s", TOOL_SIGNALS, exc)
         return json.dumps(
             {"ok": False, "message": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
 
 
-_REVIEW_SCHEMA = {
-    "name": TOOL_REVIEW,
+def _tool_report(**kwargs: Any) -> str:
+    """Tool ``skills_report``: el informe completo, listo para abrir un issue.
+
+    Devuelve el mismo dato que ``skills_signals`` más un bloque de texto pensado para
+    pegarse en un issue del repo de skills. El plugin redacta; el issue lo abre quien
+    corresponda.
+    """
+    try:
+        from . import recolector  # noqa: PLC0415
+
+        home = _hermes_home()
+        informe = recolector.recolectar(
+            hermes_home=home, skills_dirs=_skills_dirs(home), force=bool(kwargs.get("force")))
+        salida = _senales_json(informe, limite=int(kwargs.get("limit") or 20))
+        salida["markdown"] = _markdown_issue(informe)
+        salida["nota"] = (
+            "El plugin no abre el issue: lo redacta. Abrirlo en rosero-skills es del paso "
+            "siguiente del flujo, y no escribe sobre ningun skill."
+        )
+        return json.dumps(salida, ensure_ascii=False, default=str)
+    except Exception as exc:
+        logger.warning("hermes-skills-helper: %s falló: %s", TOOL_REPORT, exc)
+        return json.dumps(
+            {"ok": False, "message": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
+
+
+def _markdown_issue(informe: Any) -> str:
+    """Redacta el cuerpo de un issue con las señales del barrido."""
+    lineas = ["## Señales del recolector (`hermes-skills-helper`)", ""]
+    lineas.append(f"**Resumen:** {informe.summary()}")
+    if informe.limitation:
+        lineas.append(f"**Limitación:** {informe.limitation}")
+    lineas.append("")
+
+    r = informe.uso
+    if r is not None:
+        cubos = [
+            ("Sin usar — creados y nunca usados", r.sin_usar,
+             lambda s: f"- `{s.nombre}` — {s.motivo}"),
+            ("Sin cambio — se usan mucho y nunca se parchearon", r.sin_cambio,
+             lambda s: f"- `{s.nombre}` — {s.motivo}"),
+            ("Sin reuso — parcheados y no vueltos a usar", r.sin_reuso,
+             lambda s: f"- `{s.nombre}` — {s.motivo}"),
+            ("Hinchados — desgaste acumulado", r.hinchado,
+             lambda s: f"- `{s.nombre}` — {s.motivo}"),
+        ]
+        for titulo, items, fmt in cubos:
+            lineas.append(f"### {titulo} ({len(items)})")
+            lineas.append("")
+            if items:
+                lineas.extend(fmt(s) for s in items[:30])
+            else:
+                lineas.append("_ninguno_")
+            lineas.append("")
+
+    rec = informe.recurrence
+    if rec is not None:
+        lineas.append(f"### Fallos recurrentes ({len(rec.recurring)})")
+        lineas.append("")
+        if rec.recurring:
+            lineas.extend(f"- {c.why()}" for c in rec.recurring[:30])
+        else:
+            lineas.append("_ninguno_")
+        lineas.append("")
+
+    lineas.append("---")
+    lineas.append("")
+    lineas.append("_Generado por el recolector. No propone cambios de texto ni escribe "
+                  "sobre ningún skill: los datos son el insumo de la revisión._")
+    return "\n".join(lineas)
+
+
+_SIGNALS_SCHEMA = {
+    "name": TOOL_SIGNALS,
     "description": (
-        "Revisa los fallos que se repiten en la trayectoria del arnés y propone UN cambio "
-        "mínimo en un skill para evitar que se repitan. Si no corresponde ningún cambio, "
-        "responde no_op — que es una respuesta válida, no un error. Por defecto sólo "
-        "propone: para aplicar hay que pedirlo explícitamente, y la escritura queda sujeta "
-        "al gate de aprobación del arnés."
+        "Informa qué skills del catálogo tienen señal de mejora, y cuál. Cuatro cubos: "
+        "sin usar (creados y nunca usados), sin cambio (se usan mucho y nunca se "
+        "parchearon), sin reuso (parcheados y no vueltos a usar) e hinchados (cuerpo o "
+        "número de parches fuera de rango). Sólo lee: no escribe, no propone cambios de "
+        "texto, no llama al modelo."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "index": {
-                "type": "integer",
-                "description": "Cuál de los fallos recurrentes revisar (0 = el más frecuente).",
-            },
-            "skill": {
-                "type": "string",
-                "description": (
-                    "El skill a revisar. Si se omite, se usa el nombre de la herramienta "
-                    "del fallo."
-                ),
-            },
-            "apply": {
+            "force": {
                 "type": "boolean",
-                "description": (
-                    "Si es true, aplica el cambio propuesto. Por defecto false: propone y "
-                    "se detiene. La escritura queda sujeta al gate de aprobación del arnés."
-                ),
+                "description": "Barre ahora sin respetar el intervalo mínimo de 900 s.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Máximo de skills listados por cubo (por defecto 20).",
             },
         },
         "required": [],
     },
 }
 
-_UNDO_SCHEMA = {
-    "name": TOOL_UNDO,
+_REPORT_SCHEMA = {
+    "name": TOOL_REPORT,
     "description": (
-        "Revierte el último cambio que hermes-skills-helper aplicó a un skill, "
-        "restaurándolo byte a byte a su estado previo. Verifica el hash restaurado."
+        "El informe completo del recolector, con las señales de uso y los fallos "
+        "recurrentes, más un cuerpo en Markdown listo para abrir un issue en el repo de "
+        "skills. Sólo lee y redacta: no abre el issue, no escribe sobre ningún skill y no "
+        "llama al modelo."
     ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "force": {
+                "type": "boolean",
+                "description": "Barre ahora sin respetar el intervalo mínimo de 900 s.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Máximo de skills listados por cubo (por defecto 20).",
+            },
+        },
+        "required": [],
+    },
 }
 
 
 def register(ctx: Any) -> None:
-    """Registra el hook determinista y los dos tools.
+    """Registra el hook de barrido y los dos tools de consulta.
 
     El manifest declara exactamente esto. Un hook o tool declarado y no registrado produce
     un aviso del validador, y anunciar una capacidad que no existe es la clase de detalle
@@ -283,25 +355,31 @@ def register(ctx: Any) -> None:
     ctx.register_hook(HOOK_SESSION_END, _on_session_end)
 
     ctx.register_tool(
-        name=TOOL_REVIEW,
+        name=TOOL_SIGNALS,
         toolset="skills-helper",
-        schema=_REVIEW_SCHEMA,
-        handler=_tool_review,
-        description=_REVIEW_SCHEMA["description"],
-        emoji="🔬",
+        schema=_SIGNALS_SCHEMA,
+        handler=_tool_signals,
+        description=_SIGNALS_SCHEMA["description"],
+        emoji="📊",
     )
     ctx.register_tool(
-        name=TOOL_UNDO,
+        name=TOOL_REPORT,
         toolset="skills-helper",
-        schema=_UNDO_SCHEMA,
-        handler=_tool_undo,
-        description=_UNDO_SCHEMA["description"],
-        emoji="↩️",
+        schema=_REPORT_SCHEMA,
+        handler=_tool_report,
+        description=_REPORT_SCHEMA["description"],
+        emoji="📝",
     )
     logger.info(
-        "hermes-skills-helper %s: hook '%s' + tools '%s', '%s'",
-        __version__, HOOK_SESSION_END, TOOL_REVIEW, TOOL_UNDO,
+        "hermes-skills-helper %s: hook '%s' + tools '%s', '%s' (recolector: cero escritura)",
+        __version__, HOOK_SESSION_END, TOOL_SIGNALS, TOOL_REPORT,
     )
 
 
-__all__ = ["register", "__version__", "TOOL_REVIEW", "TOOL_UNDO", "HOOK_SESSION_END"]
+__all__ = [
+    "register",
+    "__version__",
+    "TOOL_SIGNALS",
+    "TOOL_REPORT",
+    "HOOK_SESSION_END",
+]
