@@ -112,12 +112,13 @@ es gratis a cada mensaje.
 
 ```
 uso.py            la señal de uso                 54 tests
+recolector.py     el barrido, throttle y estado   25 tests
 recurrence.py     recurrencia de fallos           76 tests
 trajectory.py     lectura de la trayectoria
 effect/           fingerprint + verificación      54 tests
-recolector.py     el barrido y el throttle
+tests/test_informe.py  el markdown y el JSON      37 tests
 
-184 tests. validate 13/13. El barrido corre contra el arnés real (11/11 en el cableado).
+246 tests. validate 13/13. El barrido corre contra el arnés real (11/11 en el cableado).
 ```
 
 Las cuatro señales, medidas sobre el arnés real el 29-sep-2026:
@@ -127,10 +128,13 @@ Las cuatro señales, medidas sobre el arnés real el 29-sep-2026:
 confiable: True · sin registro: 0
 
 andrea-docs                          93 usos    0 parches    4,5 KB
-andrea-gatekeeper                    61 usos    0 parches    5,4 KB
+andrea-gatekeeper                    62 usos    0 parches    5,4 KB
 andrea-governance                   305 usos  189 parches  100,3 KB
 nextcloud-contacts                   47 usos   30 parches   13,8 KB
 ```
+
+Y los 28 de esos 32 nunca usados nacieron en dos tandas — 17 el 28-jul y 11 el 22-ago—, que
+es un dato sobre el criterio de creación, no sobre 32 skills individuales.
 
 ## Lo que este plugin reemplaza
 

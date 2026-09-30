@@ -74,7 +74,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,19 @@ def _senales_json(informe: Any, *, limite: int = 20) -> dict:
             "guardarrailes": len(rec.guardrails),
             "caducos": len(rec.stale),
             "confiable": rec.trustworthy,
-            "detalle": [c.why() for c in rec.recurring[:limite]],
+            # El fallo mismo, no sólo su estadística: "5 apariciones" sin decir qué falló
+            # obliga a ir a buscarlo aparte, y el tool queda a medias.
+            "detalle": [
+                {
+                    "tool": c.tool_name,
+                    "huella": c.fingerprint,
+                    "evidencia": c.why(),
+                    "muestra": " ".join((c.sample or "").split())[:300],
+                    "primera": c.first_ts,
+                    "ultima": c.last_ts,
+                }
+                for c in rec.recurring[:limite]
+            ],
         }
     return salida
 
@@ -283,7 +295,15 @@ def _markdown_issue(informe: Any) -> str:
         lineas.append(f"### Fallos recurrentes ({len(rec.recurring)})")
         lineas.append("")
         if rec.recurring:
-            lineas.extend(f"- {c.why()}" for c in rec.recurring[:30])
+            for c in rec.recurring[:30]:
+                # El fallo mismo, no sólo su estadística: un lector que ve "5 apariciones"
+                # sin saber qué falló tiene que ir a buscarlo aparte, y entonces el
+                # informe no cumple su función.
+                lineas.append(f"- **`{c.tool_name}`** — {c.why()}")
+                muestra = " ".join((c.sample or "").split())
+                if muestra:
+                    recorte = muestra[:300] + ("…" if len(muestra) > 300 else "")
+                    lineas.append(f"  > {recorte}")
         else:
             lineas.append("_ninguno_")
         lineas.append("")
