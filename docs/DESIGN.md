@@ -173,7 +173,9 @@ barrería a cada mensaje.
 MIN_SCAN_INTERVAL_SECONDS = 900
 ```
 
-El barrido tarda ~0,30 s medidos. No es caro, pero tampoco es gratis a cada mensaje.
+El barrido tarda ~0,95 s medidos sobre el arnés real —0,69 la señal de uso, 0,30 la
+recurrencia—. No es caro, pero tampoco es gratis a cada mensaje. Con el throttle, el coste
+cae a **0,000 s** en los turnos salteados, que es la mayoría.
 
 `should_scan` devuelve **la razón en ambos casos**, para que un barrido salteado sea
 auditable: "no se barrió" tiene que poder distinguirse de "se barrió y no había nada".

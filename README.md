@@ -104,7 +104,8 @@ Ninguno escribe. Ninguno propone un cambio de texto. Ninguno llama al modelo.
 
 El hook corre **por turno**, no por sesión — está documentado en
 `agent/turn_finalizer.py` (*"run_conversation() runs once per message"*). Por eso barre con
-un intervalo mínimo: el barrido completo tarda ~0,30 s medidos, que no es caro pero tampoco
+un intervalo mínimo: el barrido completo tarda ~0,95 s medidos sobre el arnés real (0,69 la
+señal de uso, 0,30 la recurrencia), que no es caro pero tampoco
 es gratis a cada mensaje.
 
 ## Estado
@@ -232,7 +233,21 @@ hermes plugins install maurorosero/hermes-skills-helper
 hermes plugins enable hermes-skills-helper
 ```
 
-Es **opt-in**: sin `--enable`, el plugin no se activa.
+Es **opt-in**: sin `--enable`, el plugin no se activa. El `enable` recarga los hooks en el
+gateway en caliente —los tools quedan para la sesión siguiente—, así que **no hace falta
+reiniciar nada**.
+
+### Dónde vive el estado
+
+En `<home>/plugin-data/hermes-skills-helper/recolector-state.json`, **nunca** dentro del
+árbol del plugin. El host lo pide explícitamente en `plugins/plugin_storage.py`:
+
+> *"Plugins must NOT park state in `<hermes home>/plugins/<name>/` (the install dir, deleted
+> by `remove` and git-pulled by `update`)."*
+
+Y no es una preferencia de estilo: `plugins update` reemplaza el árbol completo con
+`os.replace`, así que el estado que viva adentro desaparece en la primera actualización. Un
+`install` con el directorio ya ocupado, además, falla con *"already exists"*.
 
 ## Alcance
 
