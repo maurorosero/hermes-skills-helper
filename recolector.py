@@ -90,8 +90,11 @@ except ImportError:  # cargado como módulo suelto (tests, ejecución directa)
 
 logger = logging.getLogger(__name__)
 
-#: Nombre del archivo de estado, dentro de la carpeta del plugin.
+#: Nombre del archivo de estado, **fuera** del árbol del plugin (ver `state_path`).
 STATE_FILE_NAME = "recolector-state.json"
+
+#: Namespace del plugin para sus datos. El host deriva de acá `<home>/plugin-data/<name>/`.
+PLUGIN_DATA_NAME = "hermes-skills-helper"
 
 #: Intervalo mínimo entre barridos. El hook `on_session_end` corre **por turno**
 #: (verificado en `agent/turn_finalizer.py`), no por sesión: sin throttle barrería a cada
@@ -157,8 +160,25 @@ class RecolectorReport:
 # -- Estado --------------------------------------------------------------------------
 
 def state_path(*, hermes_home: Path) -> Path:
-    """Ruta del estado del recolector, dentro de la carpeta del plugin."""
-    return Path(hermes_home) / "plugins" / "hermes-skills-helper" / STATE_FILE_NAME
+    """Ruta del estado del recolector, **fuera del árbol del plugin**.
+
+    No va en `<home>/plugins/<name>/` a propósito. El host es explícito en
+    `plugins/plugin_storage.py`: *"Plugins must NOT park state in
+    `<hermes home>/plugins/<name>/` (the install dir, deleted by `remove` and git-pulled by
+    `update`)"*. Y el instalador lo confirma: `_swap_in_plugin` hace `os.replace` del
+    directorio entero, así que el estado que viva adentro se pierde en el primer `update`,
+    y un directorio ya existente **bloquea la instalación** (`Plugin '{name}' already
+    exists. Use force reinstall`).
+
+    Esta es la convención del host, la misma que usa `disk-cleanup`: estado por plugin en
+    `<home>/plugin-data/<name>/`.
+
+    La resolución replica la de `plugins.plugin_storage.plugin_data_dir` en lugar de
+    importarla: importar un módulo del host desde un plugin ata el plugin a una ruta de
+    import, y esto es una ruta relativa al home. Si algún día esa función cambia de forma,
+    esto sigue funcionando.
+    """
+    return Path(hermes_home) / "plugin-data" / PLUGIN_DATA_NAME / STATE_FILE_NAME
 
 
 def read_state(*, hermes_home: Path) -> dict:
