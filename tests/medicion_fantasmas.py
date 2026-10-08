@@ -1,8 +1,16 @@
-"""Medición real (no test): los fantasmas del recolector ANTES y DESPUÉS del arreglo.
+"""Medición real (no test): los fantasmas del recolector, contados contra el arnés real.
 
 Mide contra el arnés de Mauro, no contra fixtures. Se corre a mano y se lee el resultado.
-El fantasma esperado al terminar es **uno solo**: ``knowledge-management``, que no está en
-ninguna fuente porque se retiró — su contenido quedó en el wiki como documento.
+
+Los fantasmas se cuentan **dos veces** y las dos cifras importan, porque no son lo mismo:
+
+    solo activos (+/- 0)   lo que el reporte puede dar de baja. Es la cifra accionable.
+    con archivados         incluye entradas cuyo único SKILL.md vive en .archive/, que no
+                           es una fuente del plugin. Ahí ``ruta = None`` es correcto: el
+                           skill está archivado, no perdido.
+
+El estado final de T-0021 son **0 fantasmas activos**: los 2 reales se resolvieron
+sumando fuentes, y los 3 muertos salieron de ``.usage.json``.
 
 Uso:
     python3 tests/medicion_fantasmas.py
@@ -56,9 +64,10 @@ def main() -> int:
         print("   ", n)
     print()
 
-    esperados = {"knowledge-management"}
+    esperados: set[str] = set()
     if set(activos) == esperados:
-        print("OK: los fantasmas activos son los esperados por el plan:", sorted(esperados))
+        print("OK: 0 fantasmas activos — los 2 reales los resolvieron las fuentes nuevas")
+        print("    y los 3 muertos salieron del registro.")
         return 0
     print("NO: se esperaba", sorted(esperados), "y hay", activos)
     return 1
