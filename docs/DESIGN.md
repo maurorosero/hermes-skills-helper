@@ -90,6 +90,40 @@ orden de los directorios importa: el arnés resuelve **local primero**
 (`agent/skill_utils.py:420`, docstring *"local ... first"*), así que se busca en el mismo
 orden y el tamaño medido es el del archivo que realmente se carga.
 
+### Las fuentes del `SKILL.md` — y los fantasmas
+
+El registro es un mapa **nombre → registro**: dice qué skills existen, no dónde vive cada
+uno. La ruta la resuelve `_skills_dirs()`. Una entrada cuyo `SKILL.md` no aparece en ninguna
+de esas fuentes es un **fantasma**: una señal sin archivo que la respalde.
+
+La lista completa, en orden:
+
+```
+external_dirs configurados   <home>/skills     ← éstos ya estaban
+<raíz>/profiles/*/skills     core/optional-skills   ← y éstos faltaban
+```
+
+Faltaban los dos últimos, y el fallo era silencioso: skills que **existen en disco** —y que
+el arnés carga— se medían como inexistentes. En el arnés de Mauro eran dos reales, ambos en
+`optional-skills` (`audiocraft-audio-generation`, `segment-anything-model`), que además
+tenían `use_count = 0`: el reporte los habría dado de baja por "nunca usados" cuando el
+archivo estaba ahí.
+
+Las dos fuentes nuevas van **después** del default a propósito. Sólo aportan lo que ningún
+directorio previo resolvía, así que ningún tamaño ya medido cambia de dueño — el arreglo
+suma sin correr nada de lugar. Y la raíz se pide a `get_default_hermes_root()`: con
+`HERMES_HOME=<raíz>/profiles/<nombre>`, esa función devuelve `<raíz>`, que es lo que hace
+falta para ver a los **demás** perfiles.
+
+Ojo con la conclusión que esto habilita: que una entrada no aparezca en ninguna fuente no
+prueba por sí sola que el skill no exista — prueba que no está donde el plugin mira. Los
+tres fantasmas que quedaban en el arnés de Mauro
+(`andrea-gatekeeper`, `email-mailbox-cleanup`, `knowledge-management`) sí eran entradas
+muertas, pero eso se confirmó aparte: el `LEEME` del wiki documenta los dos últimos como
+retirados y con su contenido rescatado. Lo mismo vale para los archivados — entran en
+`.archive/`, que no es una fuente, y se reportan como `ruta = None` sin que eso sea un
+defecto.
+
 ### El umbral de hinchado, y de dónde sale
 
 De dos fuentes que coinciden, y ninguna de las dos mide skills:

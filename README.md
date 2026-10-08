@@ -218,6 +218,7 @@ El código previo queda en la rama `pre-recorte-0.3.0`.
 python3 tests/test_uso.py                  # 54 tests de la señal de uso
 python3 tests/test_recurrence.py           # 76 tests del filtro de recurrencia
 python3 tests/test_effect.py               # 54 tests de la verificación
+python3 tests/test_skills_dirs.py          # 16 tests de las fuentes del SKILL.md
 python3 tests/medicion_uso.py              # las cuatro señales, sobre el arnés real
 python3 tests/medicion_recurrencia.py      # recurrencia sobre 69.000+ mensajes reales
 python3 tests/medicion_cableado.py         # el plugin cargado por el arnés (11/11)
@@ -229,6 +230,27 @@ Los `medicion_*.py` no son tests: se corren a mano y se lee el resultado. Miden 
 datos que existen en disco, no contra fixtures.
 
 Sin dependencias externas: Python estándar y la biblioteca del arnés cuando está presente.
+
+## Dónde busca el `SKILL.md`
+
+El registro de uso es un mapa **nombre → registro**: dice qué skills existen, no dónde vive
+cada uno. La ruta hay que resolverla aparte, y de eso se ocupa `_skills_dirs()`. Lo que no
+esté en esa lista se mide como si no existiera — un "fantasma": una entrada con señal, pero
+sin archivo que respalde el tamaño.
+
+Las fuentes, en este orden:
+
+| fuente | de dónde sale |
+|---|---|
+| los `external_dirs` configurados | `skills.external_dirs` del `config.yaml` |
+| `<home>/skills` | el hogar del arnés |
+| los perfiles de los agentes | `<raíz>/profiles/*/skills` |
+| los `optional-skills` del core | `get_optional_skills_dir()` |
+
+Las dos últimas van **después** del default a propósito: sólo aportan lo que ningún
+directorio previo resolvía, así que ningún tamaño ya medido cambia de dueño. El resto del
+orden es el del arnés — resuelve local primero (`agent/skill_utils.py:420`, *"local ...
+first"*) —, y lo que se mide tiene que ser el archivo que realmente se carga.
 
 ## Instalación
 

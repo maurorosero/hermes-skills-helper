@@ -74,7 +74,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.4.1"
+__version__ = "0.4.3"
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,47 @@ def _hermes_home() -> Path:
         return Path(os.path.expanduser("~/.hermes")).resolve()
 
 
+def _dirs_de_perfiles(raiz: Path) -> list[Path]:
+    """Los ``skills/`` de cada perfil de agente, derivados de la raíz del arnés.
+
+    Un perfil es un hogar aparte, con sus propios skills. El registro de uso que el plugin
+    lee enumera nombres, no rutas: sin esta fuente, un skill que sólo vive en un perfil se
+    medía como si no existiera — un fantasma por definición.
+
+    La raíz se pide a ``get_default_hermes_root()`` y no se deriva del path del hogar: con
+    ``HERMES_HOME=<raíz>/profiles/<nombre>`` esa función devuelve ``<raíz>``, que es lo que
+    hace falta para encontrar a los **demás** perfiles.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+
+        base = Path(get_default_hermes_root()).expanduser().resolve()
+        return [p for p in sorted((base / "profiles").glob("*/skills")) if p.is_dir()]
+    except Exception as exc:
+        logger.debug("No se pudieron leer los directorios de los perfiles: %s", exc)
+        return []
+
+
+def _dir_optional_skills() -> list[Path]:
+    """El ``optional-skills/`` del core: los skills que se distribuyen pero no se instalan.
+
+    Su registro de uso existe igual que el de los instalados, así que sin esta fuente los
+    que sí están en disco se reportaban como inexistentes. La ruta se resuelve con el
+    helper del host (``get_optional_skills_dir``), que honra el wrapper de empaquetado, y
+    la raíz del core se toma de ``hermes_constants.__file__`` en vez de una ruta clavada.
+    """
+    try:
+        import hermes_constants  # noqa: PLC0415
+        from hermes_constants import get_optional_skills_dir  # noqa: PLC0415
+
+        repo_root = Path(hermes_constants.__file__).resolve().parent
+        opcional = Path(str(get_optional_skills_dir(repo_root / "optional-skills")))
+        return [opcional] if opcional.is_dir() else []
+    except Exception as exc:
+        logger.debug("No se pudieron leer los optional-skills del core: %s", exc)
+        return []
+
+
 def _skills_dirs(hermes_home: Path) -> list[Path]:
     """Directorios donde buscar skills: los externos configurados, más el por defecto.
 
@@ -111,9 +152,15 @@ def _skills_dirs(hermes_home: Path) -> list[Path]:
     encontraría el SKILL.md de la mayoría de los skills, y el fallo sería silencioso: el
     plugin reportaría "no se encontró" para skills que existen.
 
-    El orden importa: el arnés resuelve **local primero** (``agent/skill_utils.py:420``,
-    docstring *"local ... first"*), así que la ruta por defecto va al final para que el
-    tamaño medido sea el del archivo que realmente se carga.
+    Además de esos dos, hay dos fuentes que faltaban y producían el mismo fallo silencioso
+    — skills reales reportados como inexistentes: los **perfiles de los agentes** y los
+    **optional-skills del core** (ver ``_dirs_de_perfiles`` y ``_dir_optional_skills``).
+
+    El orden importa dos veces. Primero, el arnés resuelve **local primero**
+    (``agent/skill_utils.py:420``, docstring *"local ... first"*), así que la ruta por
+    defecto va al final. Y las dos fuentes nuevas van **después** de ese default: sólo
+    aportan lo que ningún directorio previo resolvía, así que ningún tamaño ya medido
+    cambia — el arreglo suma sin correr nada de lugar.
     """
     dirs: list[Path] = []
     try:
@@ -133,6 +180,10 @@ def _skills_dirs(hermes_home: Path) -> list[Path]:
     por_defecto = (hermes_home / "skills").resolve()
     if por_defecto not in dirs:
         dirs.append(por_defecto)
+
+    for extra in _dirs_de_perfiles(hermes_home) + _dir_optional_skills():
+        if extra not in dirs:
+            dirs.append(extra)
     return dirs
 
 

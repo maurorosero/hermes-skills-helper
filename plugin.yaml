@@ -1,5 +1,5 @@
 name: hermes-skills-helper
-version: 0.4.2
+version: 0.4.3
 manifest_version: 2
 api_version: 1
 description: "Recolector de señales para la mejora de skills: mide uso, desgaste y fallos recurrentes, y entrega los datos con los que decidir si un skill se crea, se mejora o se da de baja. No escribe sobre los skills y no llama al modelo."
