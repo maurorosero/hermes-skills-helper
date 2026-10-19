@@ -1,0 +1,12 @@
+# Configuracion de gitleaks.
+#
+# La allowlist es para casos INEVITABLES, no para tapar hallazgos: un gate con
+# falsos positivos es un gate que se termina salteando, y entonces no existe.
+# Si un hallazgo se puede arreglar en el archivo, se arregla ahi, no aca.
+#
+# SOPS NO va en la allowlist, a proposito. Los archivos cifrados con SOPS pasan
+# solos (sus valores estan cifrados y no coinciden con ningun patron). Y si alguno
+# queda SIN cifrar, queremos que el gate lo bloquee: ese es el caso peligroso.
+
+[extend]
+useDefault = true

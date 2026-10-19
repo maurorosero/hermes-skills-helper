@@ -1,0 +1,42 @@
+# Gate del repo: un secreto nunca llega al remoto, y el commit se valida.
+#
+#   pre-push   -> gitleaks sobre el RANGO de commits que se va a subir. Es LA barrera.
+#   pre-commit -> linters, para que el commit no entre con ruido.
+#
+# Por que el pre-push mira el RANGO y no los archivos: un secreto commiteado y
+# despues borrado IGUAL viaja en el historial. Mirar solo el working tree no lo
+# veria; mirar el rango, si.
+#
+# Los hooks no se versionan (viven en .git/hooks). Despues de clonar:
+#     pre-commit install --hook-type pre-commit --hook-type pre-push
+
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks-push
+        name: gitleaks . secretos en el rango a subir
+        entry: gitleaks git --log-opts=origin/main..HEAD --redact --no-banner .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff . python
+        entry: ruff check --fix --force-exclude
+        language: system
+        types_or: [python]
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff . formato python
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python]
+        stages: [pre-commit]
+      - id: trailing-whitespace
+        name: sin espacios al final de linea
+        entry: bash -c 'sed -i "s/[ \\t]*$//" "$@"' --
+        language: system
+        types: [text]
+        stages: [pre-commit]

@@ -275,6 +275,29 @@ Y no es una preferencia de estilo: `plugins update` reemplaza el árbol completo
 `os.replace`, así que el estado que viva adentro desaparece en la primera actualización. Un
 `install` con el directorio ya ocupado, además, falla con *"already exists"*.
 
+## Gate de secretos
+
+El repo es **público**, así que nada con pinta de secreto puede llegar al remoto.
+Vienen versionados `.pre-commit-config.yaml`, `.gitleaks.toml` y la sección de secretos en
+`.gitignore`; **los hooks no**, porque viven en `.git/hooks/`, que es local. **Cada clon los
+instala:**
+
+```bash
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+- **`pre-push`** → gitleaks sobre el rango `origin/main..HEAD`. Es **la** barrera, y mira el
+  rango por una razón: un secreto commiteado y después borrado *igual* viaja en el historial,
+  y el working tree no lo vería.
+- **`pre-commit`** → ruff (lint y formato) y espacios al final de línea.
+
+Sin los hooks instalados el gate **no existe** en ese clon, y un secreto pusheado viaja en el
+historial para siempre. Verificación del estado:
+
+```bash
+bash ~/developers/ai/skills/devops/guardrail-secretos-git/scripts/instalar-gate.sh --check .
+```
+
 ## Alcance
 
 El dominio es **skills**, y sólo skills.
